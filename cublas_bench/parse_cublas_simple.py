@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-简化版cuBLAS结果解析工具
+Simplified cuBLAS Result Parsing Tool
 
-# 方法1: 从文件读取
+# Method 1: Read from file
 python3 parse_cublas_simple.py cublas_bench.log
 
-# 方法2: 使用管道（实时解析）
+# Method 2: Use pipe (real-time parsing)
 bash cublas_bench.sh 2>&1 | tee cublas_bench.log | python3 parse_cublas_simple.py
 
-# 方法3: 从标准输入读取
+# Method 3: Read from stdin
 cat cublas_bench.log | python3 parse_cublas_simple.py
 
 """
@@ -17,19 +17,19 @@ cat cublas_bench.log | python3 parse_cublas_simple.py
 import re
 import sys
 
-# B200官方数据 (TFOPs)
+# B200 official data (TFOPs)
 OFFICIAL = {'FP4': 6339, 'FP8': 2880, 'FP16': 1437, 'BF16': 1526, 'TF32': 735, 'FP32': 70}
 TOLERANCE = 0.05  # 5%
 
 
 def parse_and_compare(content):
-    """解析内容并对比"""
-    # 提取Gflops值
+    """Parse content and compare"""
+    # Extract Gflops values
     pattern = r'(FP4|FP8|FP16|BF16|TF32|FP32)\s+.*?Gflops\s*=\s*([0-9.]+)'
     matches = re.findall(pattern, content, re.DOTALL)
 
     print("\n" + "=" * 70)
-    print(f"{'精度':<8} {'实测(TFOPs)':<14} {'官方(TFOPs)':<14} {'差异(%)':<12} {'结果'}")
+    print(f"{'Precision':<10} {'Measured(TFOPs)':<16} {'Official(TFOPs)':<16} {'Diff(%)':<12} {'Result'}")
     print("-" * 70)
 
     all_pass = True
@@ -38,16 +38,16 @@ def parse_and_compare(content):
         official_tflops = OFFICIAL.get(precision, 0)
         diff = ((measured_tflops - official_tflops) / official_tflops) * 100
         is_pass = abs(diff) <= (TOLERANCE * 100)
-        status = "✓ 合格" if is_pass else "✗ 不合格"
+        status = "✓ PASS" if is_pass else "✗ FAIL"
 
-        print(f"{precision:<8} {measured_tflops:<14.2f} {official_tflops:<14.0f} "
+        print(f"{precision:<10} {measured_tflops:<16.2f} {official_tflops:<16.0f} "
               f"{diff:>+11.2f} {status}")
 
         if not is_pass:
             all_pass = False
 
     print("-" * 70)
-    print(f"结果: {'✓ 全部合格' if all_pass else '✗ 存在不合格项'} (允许波动: ±{TOLERANCE * 100}%)")
+    print(f"Result: {'✓ ALL PASSED' if all_pass else '✗ SOME TESTS FAILED'} (Tolerance: ±{TOLERANCE * 100}%)")
     print("=" * 70 + "\n")
 
     return all_pass
@@ -55,11 +55,11 @@ def parse_and_compare(content):
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
-        # 从文件读取
+        # Read from file
         with open(sys.argv[1], 'r') as f:
             content = f.read()
     else:
-        # 从标准输入读取
+        # Read from stdin
         content = sys.stdin.read()
 
     all_pass = parse_and_compare(content)

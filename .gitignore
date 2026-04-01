@@ -1,11 +1,11 @@
-# macOS系统文件
+# macOS files
 .DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 
-# IDE配置文件
+# IDE configuration
 .idea/
 .vscode/
 *.swp

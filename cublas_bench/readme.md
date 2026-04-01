@@ -1,1 +1,1 @@
-bash bash cublas_bench_b2_3.sh 2>&1 | tee cublas_bench.log | python3 parse_cublas_simple.py
+`bash bash cublas_bench_b2_3.sh 2>&1 | tee cublas_bench.log | python3 parse_cublas_simple.py`

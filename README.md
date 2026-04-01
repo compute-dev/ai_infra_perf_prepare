@@ -1,31 +1,31 @@
-# 环境预装
+# Environment Prerequisites
 
-基础配置（参考）
+Basic Configuration (Reference)
 
-| 项目                           | 配置说明                  |
-|------------------------------|-----------------------|
-| OS                           | Ubuntu 24.04.3 LTS    |
-| driver version               | `>=570`               |
-| cuda version                 | `>=12.9`              |
-| docker version               | `>=26  `              |
-| nvidia-container-cli version | 1.18.0                |
-| root账号                       | 基于root账号，配置机器间ssh免密登录 |
-| 共享存储                         | 配置nfs，或者使用共享存储，至少5TB  |
-| 本地nvme /data盘                | 本地盘要挂载上/data，容量大于3TB  |
-| miniforge、pssh、ansible       | 见 install_env.sh      |
+| Item                         | Configuration                                          |
+|------------------------------|--------------------------------------------------------|
+| OS                           | Ubuntu 24.04.3 LTS                                    |
+| driver version               | `>=570`                                                |
+| cuda version                 | `>=12.9`                                               |
+| docker version               | `>=26  `                                               |
+| nvidia-container-cli version | 1.18.0                                                 |
+| root account                 | Configure passwordless SSH login between machines using root account |
+| Shared storage               | Configure NFS or use shared storage, at least 5TB      |
+| Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB    |
+| miniforge, pssh, ansible     | See install_env.sh                                     |
 
-# Docker 镜像
+# Docker Image
 
-镜像
+Images
 
-| 显卡型号        | 镜像地址                                                                                      |
-|-------------|-------------------------------------------------------------------------------------------|
-| A800        | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
-| H200/H800   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
-| B200/B300   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |
-| GB200/GB300 | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch |
+| GPU Model       | Image Address                                                                             |
+|-----------------|-------------------------------------------------------------------------------------------|
+| A800            | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86  |
+| H200/H800       | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86  |
+| B200/B300       | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86  |
+| GB200/GB300     | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch|
 
-如果不能拉取，则本地build，每台机器都需要相同的镜像
+If you cannot pull the image, build it locally. Each machine must have the same image.
 
 Dockerfile
 
@@ -43,7 +43,7 @@ RUN cd /root && git clone https://github.com/NVIDIA/Megatron-LM.git && cd Megatr
     pip3 install transformers sentencepiece
 ```
 
-build 镜像
+Build image
 
 ```shell
 docker build -t pytorch:25.05-py3-te2.3-mcore0.12.1 --network=host .
@@ -53,15 +53,15 @@ docker build -t pytorch:25.05-py3-te2.3-mcore0.12.1 --network=host .
 
 ```shell
 cd cublas_bench
-# 示例
+# Example
 bash bash cublas_bench_b2_3.sh 2>&1 | tee cublas_bench.log | python3 parse_cublas_simple.py
 ```
 
-# NCCL test
+# NCCL Test
 
-参考https://github.com/NVIDIA/nccl-tests
+Reference: https://github.com/NVIDIA/nccl-tests
 
-### 单机
+### Single Node
 
 ```shell
 git clone https://github.com/NVIDIA/nccl-tests.git && cd nccl-tests
@@ -84,25 +84,25 @@ echo "reduce_scatter_perf"
 ./build/reduce_scatter_perf -b 8 -e 16G -f 2 -g 8 -n 50
 ```
 
-参数 -g：单机 x 卡，则 x
+Parameter -g: For a single machine with x GPUs, set to x
 
-### 多机
-注：需要关闭 ACS
+### Multi-Node
+Note: ACS must be disabled
 
-宿主机执行，宿主机之间各节点机器 root 账户互相免密
+Execute on the host machine. Root accounts on all nodes must have passwordless SSH access to each other.
 
 ```shell
-# 配置免密
+# Configure passwordless SSH
 ssh-keygen -t rsa
-# 将其他节点的公钥都拷贝到master的authorized_keys中，然后所有的节点都拷贝一份authorized_keys过去
+# Copy public keys from all nodes to the master's authorized_keys, then distribute authorized_keys to all nodes
 cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
 vim ~/.ssh/authorized_keys
 
-# 验证
+# Verify
 ssh xxxip
 ```
 
-检查 nvcc，mpi，nccl
+Check nvcc, mpi, nccl
 
 ```shell
 which nvcc
@@ -110,7 +110,7 @@ which mpirun
 ls /usr/local/cuda/include/cuda.h
 ls /usr/include/mpi.h
 ls /usr/include/nccl.h
-# 一般可能缺少mpi，下面安装命令mpi默认路径为/usr/lib/x86_64-linux-gnu/openmpi/include/mpi.h
+# MPI is commonly missing. The following install command places MPI at /usr/lib/x86_64-linux-gnu/openmpi/include/mpi.h by default
 apt update && apt install -y openmpi-bin openmpi-common libopenmpi-dev
 
 make MPI=1 NAME_SUFFIX=_mpi MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr
@@ -176,37 +176,37 @@ echo "=============reduce_scatter_perf_mpi============="
 ./build/reduce_scatter_perf_mpi -b 8 -e 16G -f 2 -g 1 -n 50
 ```
 
-# prepare验收单
+# Preparation Acceptance Checklist
 
-### 环境配置
+### Environment Configuration
 
-以实际安装为准
+Based on actual installation
 
-| 项目                           | 是否完成 | 实际已完成版本号           |
-|------------------------------|------|--------------------|
-| OS                           | ✅    | Ubuntu 24.04.3 LTS |
-| driver version               | ✅    | `>=570`            |
-| cuda version                 |      | `>=12.9`           |
-| docker version               |      | `>=26  `           |
-| nvidia-container-cli version |      | 1.18.0             |
-| root账号                       |      |                    |
-| 共享存储                         |      | 5TB                |
-| 本地nvme /data盘                |      | /data，3TB          |
-| miniforge                    |      |                    |
-| pssh                         |      |                    |
-| ansible                      |      |                    |
+| Item                         | Completed | Actual Completed Version |
+|------------------------------|-----------|--------------------------|
+| OS                           | ✅        | Ubuntu 24.04.3 LTS      |
+| driver version               | ✅        | `>=570`                  |
+| cuda version                 |           | `>=12.9`                 |
+| docker version               |           | `>=26  `                 |
+| nvidia-container-cli version |           | 1.18.0                   |
+| root account                 |           |                          |
+| Shared storage               |           | 5TB                      |
+| Local NVMe /data disk        |           | /data, 3TB               |
+| miniforge                    |           |                          |
+| pssh                         |           |                          |
+| ansible                      |           |                          |
 
-### cublasbench结果
+### cuBLAS Bench Results
 
-提交日志文件
+Submit log files
 
-### nccltest结果
+### NCCL Test Results
 
 packet=16G
 
-| 厂商  | 卡型\*单机卡数\*机器数 | AllReduce busbw(GB/s) | All2All busbw(GB/s) | AllGather busbw(GB/s) | ReduceScatter busbw(GB/s) | 网卡  |
-|:---:|:-------------:|:---------------------:|:-------------------:|:---------------------:|:-------------------------:|:---:|
-| xxx |   xxx\*8\*1   |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
-| xxx |   xxx\*8\*2   |          ...          |         ...         |          ...          |            ...            | ... |
-| xxx |   xxx\*8\*4   |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
-| ... |      ...      |          ...          |         ...         |          ...          |            ...            | ... |
+| Vendor | GPU*GPUs_per_node*Nodes | AllReduce busbw(GB/s) | All2All busbw(GB/s) | AllGather busbw(GB/s) | ReduceScatter busbw(GB/s) | NIC |
+|:------:|:-----------------------:|:---------------------:|:-------------------:|:---------------------:|:-------------------------:|:---:|
+|  xxx   |       xxx\*8\*1         |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
+|  xxx   |       xxx\*8\*2         |          ...          |         ...         |          ...          |            ...            | ... |
+|  xxx   |       xxx\*8\*4         |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
+|  ...   |          ...            |          ...          |         ...         |          ...          |            ...            | ... |

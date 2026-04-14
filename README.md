@@ -2,28 +2,29 @@
 
 Basic Configuration (Reference)
 
-| Item                         | Configuration                                          |
-|------------------------------|--------------------------------------------------------|
-| OS                           | Ubuntu 24.04.3 LTS                                    |
-| driver version               | `>=570`                                                |
-| cuda version                 | `>=12.9`                                               |
-| docker version               | `>=26  `                                               |
-| nvidia-container-cli version | 1.18.0                                                 |
+| Item                         | Configuration                                                        |
+|------------------------------|----------------------------------------------------------------------|
+| OS                           | Ubuntu 24.04.3 LTS                                                   |
+| driver version               | `>=570`                                                              |
+| cuda version                 | `>=12.9`                                                             |
+| docker version               | `>=26  `                                                             |
+| nvidia-container-cli version | 1.18.0                                                               |
 | root account                 | Configure passwordless SSH login between machines using root account |
-| Shared storage               | Configure NFS or use shared storage, at least 5TB      |
-| Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB    |
-| miniforge, pssh, ansible     | See install_env.sh                                     |
+| Shared storage               | Configure NFS or use shared storage, at least 5TB                    |
+| Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB                  |
+| miniforge, pssh, ansible     | See install_env.sh                                                   |
+| ip list                      | node1_ip,node2_ip,...                                                |
 
 # Docker Image
 
 Images
 
-| GPU Model       | Image Address                                                                             |
-|-----------------|-------------------------------------------------------------------------------------------|
-| A800            | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86  |
-| H200/H800       | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86  |
-| B200/B300       | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86  |
-| GB200/GB300     | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch|
+| GPU Model         | Image Address                                                                             |
+|-------------------|-------------------------------------------------------------------------------------------|
+| A800              | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86  |
+| H200/H800(both)   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86  |
+| B200/B300(both)   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86  |
+| GB200/GB300(both) | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch|
 
 If you cannot pull the image, build it locally. Each machine must have the same image.
 
@@ -184,13 +185,13 @@ Based on actual installation
 
 | Item                         | Completed | Actual Completed Version |
 |------------------------------|-----------|--------------------------|
-| OS                           | ✅        | Ubuntu 24.04.3 LTS      |
+| OS                           | ✅        | Ubuntu 24.04.3 LTS       |
 | driver version               | ✅        | `>=570`                  |
 | cuda version                 |           | `>=12.9`                 |
 | docker version               |           | `>=26  `                 |
 | nvidia-container-cli version |           | 1.18.0                   |
 | root account                 |           |                          |
-| Shared storage               |           | 5TB                      |
+| Shared storage               |           | /path/to/share           |
 | Local NVMe /data disk        |           | /data, 3TB               |
 | miniforge                    |           |                          |
 | pssh                         |           |                          |

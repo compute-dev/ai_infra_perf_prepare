@@ -14,6 +14,7 @@ Basic Configuration (Reference)
 | Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB                  |
 | miniforge, pssh, ansible     | See install_env.sh                                                   |
 | ip list                      | node1_ip,node2_ip,...                                                |
+| Persistence-M                | `nvidia-smi pm -1`                                                   |
 
 # Docker Image
 
@@ -21,10 +22,10 @@ Images
 
 | GPU Model         | Image Address                                                                             |
 |-------------------|-------------------------------------------------------------------------------------------|
-| A800              | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86  |
-| H200/H800(both)   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86  |
-| B200/B300(both)   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86  |
-| GB200/GB300(both) | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch|
+| A800              | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
+| H200/H800(both)   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
+| B200/B300(both)   | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |
+| GB200/GB300(both) | rozinnnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch |
 
 If you cannot pull the image, build it locally. Each machine must have the same image.
 
@@ -88,6 +89,7 @@ echo "reduce_scatter_perf"
 Parameter -g: For a single machine with x GPUs, set to x
 
 ### Multi-Node
+
 Note: ACS must be disabled
 
 Execute on the host machine. Root accounts on all nodes must have passwordless SSH access to each other.
@@ -185,8 +187,8 @@ Based on actual installation
 
 | Item                         | Completed | Actual Completed Version |
 |------------------------------|-----------|--------------------------|
-| OS                           | ✅        | Ubuntu 24.04.3 LTS       |
-| driver version               | ✅        | `>=570`                  |
+| OS                           | ✅         | Ubuntu 24.04.3 LTS       |
+| driver version               | ✅         | `>=570`                  |
 | cuda version                 |           | `>=12.9`                 |
 | docker version               |           | `>=26  `                 |
 | nvidia-container-cli version |           | 1.18.0                   |
@@ -207,7 +209,7 @@ packet=16G
 
 | Vendor | GPU*GPUs_per_node*Nodes | AllReduce busbw(GB/s) | All2All busbw(GB/s) | AllGather busbw(GB/s) | ReduceScatter busbw(GB/s) | NIC |
 |:------:|:-----------------------:|:---------------------:|:-------------------:|:---------------------:|:-------------------------:|:---:|
-|  xxx   |       xxx\*8\*1         |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
-|  xxx   |       xxx\*8\*2         |          ...          |         ...         |          ...          |            ...            | ... |
-|  xxx   |       xxx\*8\*4         |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
-|  ...   |          ...            |          ...          |         ...         |          ...          |            ...            | ... |
+|  xxx   |        xxx\*8\*1        |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
+|  xxx   |        xxx\*8\*2        |          ...          |         ...         |          ...          |            ...            | ... |
+|  xxx   |        xxx\*8\*4        |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
+|  ...   |           ...           |          ...          |         ...         |          ...          |            ...            | ... |

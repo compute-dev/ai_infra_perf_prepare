@@ -20,8 +20,8 @@ Basic Configuration (Reference)
 
 Images
 
-| GPU Model         | Image Address                                                                             |
-|-------------------|-------------------------------------------------------------------------------------------|
+| GPU Model         | Image Address                                                                            |
+|-------------------|------------------------------------------------------------------------------------------|
 | A800              | example/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
 | H200/H800(both)   | example/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
 | B200/B300(both)   | example/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |

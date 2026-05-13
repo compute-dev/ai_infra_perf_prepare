@@ -20,12 +20,13 @@ Basic Configuration (Reference)
 
 Images
 
-| GPU Model         | Image Address                                                                            |
-|-------------------|------------------------------------------------------------------------------------------|
-| A800              | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
-| H200/H800(both)   | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
-| B200/B300(both)   | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |
-| GB200/GB300(both) | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch |
+| GPU Model            | Image Address                                                                            |
+|----------------------|------------------------------------------------------------------------------------------|
+| nccltest(neccessary) | rozinnn/ai_infra_bench:nccltest_x86_arm64_v20260507                                                                                          |
+| A800                 | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
+| H200/H800(both)      | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
+| B200/B300(both)      | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |
+| GB200/GB300(both)    | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch |
 
 If you cannot pull the image, build it locally. Each machine must have the same image.
 

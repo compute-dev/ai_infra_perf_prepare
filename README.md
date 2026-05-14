@@ -2,19 +2,19 @@
 
 Basic Configuration (Reference)
 
-| Item                         | Configuration                                                        |
-|------------------------------|----------------------------------------------------------------------|
-| OS                           | Ubuntu 24.04.3 LTS                                                   |
-| driver version               | `>=570`                                                              |
-| cuda version                 | `>=12.9`                                                             |
-| docker version               | `>=26  `                                                             |
-| nvidia-container-cli version | 1.18.0                                                               |
+| Item                         | Configuration                                                       |
+|------------------------------|---------------------------------------------------------------------|
+| OS                           | Ubuntu 24.04.3 LTS                                                  |
+| driver version               | `>=570`                                                             |
+| cuda version                 | `>=12.9`                                                            |
+| docker version               | `>=26  `                                                            |
+| nvidia-container-cli version | 1.18.0                                                              |
 | root account                 | Configure passwordless SSH login between machines using root account |
-| Shared storage               | Configure NFS or use shared storage, at least 5TB                    |
-| Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB                  |
-| miniforge, pssh, ansible     | See install_env.sh                                                   |
-| ip list                      | node1_ip,node2_ip,...                                                |
-| Persistence-M                | `nvidia-smi pm -1`                                                   |
+| Shared storage               | Configure NFS or use shared storage, at least 5TB                   |
+| Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB                 |
+| miniforge, pssh, ansible     | See install_env.sh                                                  |
+| ip list                      | node1_ip,node2_ip,...                                               |
+| Persistence-M                | `nvidia-smi -pm 1`                                                  |
 
 # Docker Image
 

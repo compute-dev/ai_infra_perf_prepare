@@ -22,7 +22,7 @@ Images
 
 | GPU Model            | Image Address                                                                            |
 |----------------------|------------------------------------------------------------------------------------------|
-| nccltest(neccessary) | rozinnn/ai_infra_bench:nccltest_x86_arm64_v20260518                                      |
+| nccltest(neccessary) | rozinnn/ai_infra_bench:nccltest_x86_arm64_v20260524                                      |
 | A800                 | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
 | H200/H800(both)      | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
 | B200/B300(both)      | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |

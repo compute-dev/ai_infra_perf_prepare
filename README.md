@@ -8,6 +8,7 @@ Basic Configuration (Reference)
 | driver version               | `>=570`                                                              |
 | cuda version                 | `>=12.9`                                                             |
 | docker version               | `>=26  `                                                             |
+| docker root dir              | Must be placed on a data disk with capacity > 100G                   |
 | nvidia-container-cli version | 1.18.0                                                               |
 | root account                 | Configure passwordless SSH login between machines using root account |
 | Shared storage               | Configure NFS or use shared storage, at least 5TB                    |

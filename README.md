@@ -26,6 +26,7 @@ Images
 |----------------------|------------------------------------------------------------------------------------------|
 | nccltest(neccessary) | rozinnn/ai_infra_bench:nccltest_x86_arm64_v20260524                                      |
 | A800                 | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86   |
+| H20                  | vllm/vllm-openai:v0.20.0                                                                 |
 | H200/H800(both)      | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86   |
 | B200/B300(both)      | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.13.1-nccl2.26.5-cuda12.9-b200-x86   |
 | GB200/GB300(both)    | rozinnn/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-gb300-arch |
@@ -52,6 +53,17 @@ Build image
 
 ```shell
 docker build -t pytorch:25.05-py3-te2.3-mcore0.12.1 --network=host .
+```
+
+# model
+if H20, need download models
+```shell
+# use hf
+pip3 install -U huggingface_hub
+hf download tencent/Hy3-preview --local-dir /data/models/Hy3-preview
+# use modelscope
+pip3 install modelscope
+modelscope download --model Tencent-Hunyuan/Hy3-preview --local_dir /data/models/Hy3-preview
 ```
 
 # cublasMatmulbench

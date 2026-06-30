@@ -1,0 +1,23 @@
+kernels:
+  - name: cutlass3x_sm103_bstensorop_gemm_ue4m3xe2m1_ue4m3xe2m1_f32_void_e5m2_256x256x768_0x0x1_0_tnt_align32_o_vs16_ultra_2sm_nopf_epi_nosmem
+    tile:
+      M: 256
+      N: 256
+    cgas:
+      primary:
+        M: 4
+        N: 2
+      secondary:
+        M: 2
+        N: 1
+    cluster_mma_mode: true
+    cta_swizzle: true
+    split_k:
+      mode: parallel
+      primary:
+        factor: 1
+        count: 0
+      secondary:
+        factor: 1
+        count: 0
+    stream_k: false

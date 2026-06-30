@@ -1,0 +1,23 @@
+kernels:
+  - name: cutlass3x_sm100_tensorop_gemm_e4m3_e4m3_f32_void_e4m3_256x256x128_0x0x1_0_tnt_align16_2sm
+    tile:
+      M: 256
+      N: 256
+    cgas:
+      primary:
+        M: 4
+        N: 4
+      secondary:
+        M: 2
+        N: 1
+    cluster_mma_mode: true
+    cta_swizzle: true
+    split_k:
+      mode: parallel
+      primary:
+        factor: 1
+        count: 0
+      secondary:
+        factor: 1
+        count: 0
+    stream_k: false

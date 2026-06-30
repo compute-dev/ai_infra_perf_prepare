@@ -1,0 +1,5 @@
+Package: g2b-public-optimized (OPTIMIZED)
+Product: GB300
+Architecture: 103a
+Build Date: Sat Sep 20 07:58:56 UTC 2025
+Type: Optimized kernels only

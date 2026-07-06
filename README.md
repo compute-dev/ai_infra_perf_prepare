@@ -17,7 +17,7 @@ Basic Configuration (Reference)
 | ip list                      | node1_ip,node2_ip,...                                                |
 | Persistence-M                | `nvidia-smi -pm 1`                                                   |
 | ACS                          | ACS must be disabled                                                 |
-| NIC names                    | NIC names must be identical across all nodes                         |
+| NIC names                    | NIC names must be identical across all nodes,eg.bond0                |
 
 # Docker Image
 

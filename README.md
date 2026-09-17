@@ -1,234 +1,129 @@
-# Environment Prerequisites
+# AI infrastructure performance — vendor preparation & acceptance package
 
-Basic Configuration (Reference)
+This repository is the **vendor-facing** package for a GPU cluster POC. It contains
+everything needed to prepare a cluster and produce the acceptance measurements,
+runnable **by the vendor on the vendor's own cluster**: the scripts take your host
+list, your SSH port and your output directory, and depend on nothing internal to us.
 
-| Item                         | Configuration                                                        |
-|------------------------------|----------------------------------------------------------------------|
-| OS                           | Ubuntu 24.04.3 LTS                                                   |
-| driver version               | `>=570`                                                              |
-| cuda version                 | `>=12.9`                                                             |
-| docker version               | `>=26  `                                                             |
-| docker root dir              | Must be placed on a data disk with capacity > 100G                   |
-| nvidia-container-cli version | 1.18.0                                                               |
-| root account                 | Configure passwordless SSH login between machines using root account |
-| Shared storage               | Configure NFS or use shared storage, at least 5TB                    |
-| Local NVMe /data disk        | Local disk must be mounted at /data, capacity > 3TB                  |
-| miniforge, pssh, ansible     | See install_env.sh                                                   |
-| ip list                      | node1_ip,node2_ip,...                                                |
-| Persistence-M                | `nvidia-smi -pm 1`                                                   |
-| ACS                          | ACS must be disabled                                                 |
-| NIC names                    | NIC names must be identical across all nodes,eg.bond0                |
+Run the four gates in order. Each one produces hardware-independent evidence that
+can be reviewed, re-run and compared.
 
-# Docker Image
+## The four gates
 
-Images
+| # | Gate | Directory | What it proves | Rough time |
+| --- | --- | --- | --- | --- |
+| 0 | **Node consistency** | [`preflight/`](preflight/readme.md) | The nodes are actually identical. `driver_version` matching is **not** enough — drift here silently invalidates every later comparison. | minutes |
+| 1 | **Single-GPU compute** | [`cublas_bench/`](cublas_bench/readme.md) | Per-card GEMM throughput (FP8/INT8/FP16/BF16/TF32/FP32, FP4 where applicable), across **every** card, with outlier detection to find weak or throttled boards. | ~10 min/cluster |
+| 2 | **NCCL interconnect** | [`nccl_bench/`](nccl_bench/readme.md) | Intra-node NVLink and inter-node RDMA bandwidth for AllReduce / All2All / AllGather / ReduceScatter, at several cluster sizes. | ~30 min |
+| 3 | **RDMA point-to-point** | [`perftest/`](perftest/readme.md) | The raw fabric underneath NCCL, per rail. Separates a fabric fault from an NCCL/config fault and catches packet errors that bandwidth alone hides. | ~20 min |
 
-| GPU Model                            | Image Address                                                                          |
-|--------------------------------------|----------------------------------------------------------------------------------------|
-| nccltest/cublas(neccessary for B/GB) | example/ai_infra_bench:nccltest_x86_arm64_v20260608                                    |
-| nccltest/cublas(neccessary for H)    | example/ai_infra_bench:nccltest_x86_nccl2.26.5-cuda12.9-H                              |
-| A800                                 | example/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-a800-x86 |
-| H20                                  | vllm/vllm-openai:latest                                                                   |
-| H200/H800(both)                      | example/ai_infra_bench:pytorch25.05-py3-te2.3-mcore0.12.1-nccl2.26.5-cuda12.9-h200-x86 |
-| B200/B300(both)                      | example/ai_infra_bench:pytorch26.05-py3-te2.15-mcore0.16.0-amd64-bxx                   |
-| GB200/GB300(both)                    | example/ai_infra_bench:pytorch26.05-py3-te2.15-mcore0.16.0-arch-gbxx                   |
+Gate 0 must come first: without consistent nodes the later numbers are not
+comparable. Gates 1 and 2 are the headline acceptance results. Gate 3 is the
+diagnostic that tells you *where* a gate-2 problem lives.
 
-If you cannot pull the image, build it locally. Each machine must have the same image.
+## Quickstart
 
-Dockerfile
+```bash
+git clone <this repo> && cd ai_infra_perf_prepare
 
-```Dockerfile
-FROM nvcr.io/nvidia/pytorch:25.05-py3
-  
-RUN apt install -y vim git wget curl
+# 0. one-time: passwordless ssh from this machine to every node
+cp preflight/hosts.txt.example preflight/hosts.txt && vim preflight/hosts.txt
+NODE_PASSWORD='...' bash tools/setup_ssh_keyless.sh preflight/hosts.txt --port 22
 
-RUN cd /root && git clone https://github.com/NVIDIA/TransformerEngine.git && \
-    cd /root/TransformerEngine && git checkout v2.3 && git submodule update --init --recursive && \
-    NVTE_FRAMEWORK=pytorch MAX_JOBS=64 NVTE_BUILD_THREADS_PER_JOB=32 pip install .
+# 1. node consistency
+cd preflight
+bash cluster_runtime_check.sh -H hosts.txt -P 22 -o ../results/preflight/runtime.csv
+bash cluster_spec_check.sh    -H hosts.txt -P 22 -o ../results/preflight/spec.csv
 
-RUN cd /root && git clone https://github.com/NVIDIA/Megatron-LM.git && cd Megatron-LM && \
-    git checkout core_r0.13.0 && pip3 install . && \
-    pip3 install transformers sentencepiece
+# 2. single-GPU compute, every card, all nodes
+cd ../cublas_bench
+bash cluster_cublas_percard.sh -H ../preflight/hosts.txt -P 22 --gpu H800
+
+# 3. NCCL interconnect
+cd ../nccl_bench
+bash nccltest_autoconf.sh -H hosts.txt --apply     # derive the cluster-specific params
+cp hosts.txt.example hosts.txt && vim hosts.txt
+bash split_ip.sh
+#    ... start the container on every node, then run from one node — see nccl_bench/readme.md
+
+# 4. RDMA point-to-point
+cd ../perftest
+bash rail_isolation_check.sh node01 node02          # do this first, it constrains the rest
+bash perftest_pair.sh node01 node02
+bash perftest_agg.sh  node01 node02
+
+# 5. package everything for submission
+cd .. && bash tools/collect_results.sh --vendor <name> --gpu H800 --dir results
+python3 tools/summarize.py results --vendor <name> --gpu H800
 ```
 
-Build image
+Full step-by-step detail, including what each gate should produce and how to read
+it, is in **[VENDOR_RUNBOOK.md](VENDOR_RUNBOOK.md)**. The acceptance tables to fill
+in are in **[SUBMISSION.md](SUBMISSION.md)**.
 
-```shell
-docker build -t pytorch:25.05-py3-te2.3-mcore0.12.1 --network=host .
+## Prerequisites
+
+### Cluster
+
+| Item | Requirement |
+| --- | --- |
+| OS | Ubuntu 24.04 LTS (other modern distros work; the scripts are POSIX shell) |
+| NVIDIA driver | ≥ 570 |
+| CUDA | ≥ 12.9 (Blackwell/GB parts want the CUDA 13 era) |
+| Docker | ≥ 26, with the NVIDIA container toolkit |
+| Docker root dir | On a data disk with > 100 GB free |
+| GPU access | `nvidia-smi` works inside a container |
+| Root ssh between nodes | Passwordless, **required for the multi-node NCCL test** (`mpirun`) |
+| Shared storage | Optional. Not required by these scripts — but useful for collecting logs |
+| Local NVMe / data disk | Mounted at a consistent path, ≥ 3 TB recommended |
+| Interface names | **Identical across nodes** (e.g. all `bond0`), and RDMA device names likewise |
+| PCIe ACS | Disabled on every node (`nccl_bench/close_acs.sh`), otherwise intra-node P2P bandwidth suffers |
+| Persistence mode | `nvidia-smi -pm 1` |
+
+### Control machine
+
+The machine you run the drivers from needs `ssh`, `sshpass`, `tar`, `python3` and
+`git-lfs` (see the note below). The gate-2 and gate-3 scripts also need `perftest`
+(`ib_write_bw` etc.) on the **nodes**, not on the control machine.
+
+> **This repository uses git-lfs.** `cublas_bench/GB300/gemm-memread/` contains
+> ~400 MB of `.so` libraries tracked by git-lfs. Without `git-lfs` installed you
+> will get pointer files instead of libraries. Install git-lfs first, or clone
+> with `GIT_LFS_SKIP_SMUDGE=1` if you do not need that package.
+
+## Container images
+
+The tests run inside a CUDA container. Use an image matching your GPU generation,
+or build one from `nccl_bench/Dockerfile`.
+
+| GPU generation | Image generation to use |
+| --- | --- |
+| B200 / B300 / GB200 / GB300 | NVIDIA PyTorch 26.05 era (CUDA 13) |
+| H100 / H200 / H800 / H20 / A800 / L20 | NVIDIA PyTorch 25.05 era (CUDA 12.9) |
+
+Any CUDA image that already contains `nccl-tests` built with the `_mpi` binaries
+works for gate 2. The `cublasMatmulBench_<GPU>` binaries for gate 1 ship **in this
+repository** — they are not part of any image.
+
+## Layout
+
+```
+preflight/        gate 0 — node-consistency collectors and comparators
+cublas_bench/     gate 1 — per-GPU GEMM benchmark, binaries, baselines
+nccl_bench/       gate 2 — NCCL collective tests (container + MPI)
+perftest/         gate 3 — RDMA point-to-point and rail diagnostics
+tools/            ssh setup, result packaging, summary generation
+results/          created by the gates; what you submit
+VENDOR_RUNBOOK.md full step-by-step procedure
+SUBMISSION.md     acceptance tables and submission format
 ```
 
-# model
+## What gets submitted
 
-if H20, need download models
+`tools/collect_results.sh` packages the four gates' raw logs plus an environment
+snapshot and a manifest into a single tarball, and `tools/summarize.py` turns it
+into a written `SUMMARY.md` with the pass/fail verdicts. See
+[SUBMISSION.md](SUBMISSION.md) for the checklist and the tables to complete.
 
-```shell
-# use hf
-pip3 install -U huggingface_hub
-hf download your-org/your-model --local-dir /data/models/your-model
-# use modelscope
-pip3 install modelscope
-modelscope download --model your-org/your-model --local_dir /data/models/your-model
-```
-
-# cublasMatmulbench
-
-```shell
-cd cublas_bench
-# Example
-bash bash cublas_bench_b2_3.sh 2>&1 | tee cublas_bench.log | python3 parse_cublas_simple.py
-```
-
-# NCCL Test
-
-Reference: https://github.com/NVIDIA/nccl-tests
-
-### Single Node
-
-```shell
-git clone https://github.com/NVIDIA/nccl-tests.git && cd nccl-tests
-make
-```
-
-vim 1node_nccl.sh
-
-```shell
-echo "all_reduce_perf"
-./build/all_reduce_perf -b 8 -e 16G -f 2 -g 8 -n 50
-
-echo "alltoall_perf"
-./build/alltoall_perf -b 8 -e 16G -f 2 -g 8 -n 50
-
-echo "all_gather_perf"
-./build/all_gather_perf -b 8 -e 16G -f 2 -g 8 -n 50
-
-echo "reduce_scatter_perf"
-./build/reduce_scatter_perf -b 8 -e 16G -f 2 -g 8 -n 50
-```
-
-Parameter -g: For a single machine with x GPUs, set to x
-
-### Multi-Node
-
-Note: ACS must be disabled
-
-Execute on the host machine. Root accounts on all nodes must have passwordless SSH access to each other.
-
-```shell
-# Configure passwordless SSH
-ssh-keygen -t rsa
-# Copy public keys from all nodes to the master's authorized_keys, then distribute authorized_keys to all nodes
-cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
-vim ~/.ssh/authorized_keys
-
-# Verify
-ssh xxxip
-```
-
-Check nvcc, mpi, nccl
-
-```shell
-which nvcc
-which mpirun
-ls /usr/local/cuda/include/cuda.h
-ls /usr/include/mpi.h
-ls /usr/include/nccl.h
-# MPI is commonly missing. The following install command places MPI at /usr/lib/x86_64-linux-gnu/openmpi/include/mpi.h by default
-apt update && apt install -y openmpi-bin openmpi-common libopenmpi-dev
-
-make MPI=1 NAME_SUFFIX=_mpi MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr
-```
-
-vim multinode_nccl.sh
-
-```shell
-echo "=============all_reduce_perf_mpi============="
-/usr/local/openmpi/bin/mpirun -np 16 \
--H x.x.x.x:8,y.y.y.y:8 \
---allow-run-as-root \
---mca oob_tcp_if_include bond0 \
---mca btl_tcp_if_include bond0 \
--x NCCL_SOCKET_IFNAME=bond0 \
--x UCX_NET_DEVICES=bond0 \
--x NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_6,mlx5_7,mlx5_8,mlx5_9 \
--x PATH=/usr/local/openmpi/bin:$PATH \
--x LD_LIBRARY_PATH=/usr/local/openmpi/lib:$LD_LIBRARY_PATH \
---mca plm_rsh_args "-p 22" \
-./build/all_reduce_perf_mpi -b 8 -e 16G -f 2 -g 1 -n 50
-
-echo "=============alltoall_perf_mpi============="
-/usr/local/openmpi/bin/mpirun -np 16 \
--H x.x.x.x:8,y.y.y.y:8 \
---allow-run-as-root \
---mca oob_tcp_if_include bond0 \
---mca btl_tcp_if_include bond0 \
--x NCCL_SOCKET_IFNAME=bond0 \
--x UCX_NET_DEVICES=bond0 \
--x NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_6,mlx5_7,mlx5_8,mlx5_9 \
--x PATH=/usr/local/openmpi/bin:$PATH \
--x LD_LIBRARY_PATH=/usr/local/openmpi/lib:$LD_LIBRARY_PATH \
---mca plm_rsh_args "-p 22" \
-./build/alltoall_perf_mpi -b 8 -e 16G -f 2 -g 1 -n 50
-
-echo "=============all_gather_perf_mpi============="
-/usr/local/openmpi/bin/mpirun -np 16 \
--H x.x.x.x:8,y.y.y.y:8 \
---allow-run-as-root \
---mca oob_tcp_if_include bond0 \
---mca btl_tcp_if_include bond0 \
--x NCCL_SOCKET_IFNAME=bond0 \
--x UCX_NET_DEVICES=bond0 \
--x NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_6,mlx5_7,mlx5_8,mlx5_9 \
--x PATH=/usr/local/openmpi/bin:$PATH \
--x LD_LIBRARY_PATH=/usr/local/openmpi/lib:$LD_LIBRARY_PATH \
---mca plm_rsh_args "-p 22" \
-./build/all_gather_perf_mpi -b 8 -e 16G -f 2 -g 1 -n 50
-
-echo "=============reduce_scatter_perf_mpi============="
-/usr/local/openmpi/bin/mpirun -np 16 \
--H x.x.x.x:8,y.y.y.y:8 \
---allow-run-as-root \
---mca oob_tcp_if_include bond0 \
---mca btl_tcp_if_include bond0 \
--x NCCL_SOCKET_IFNAME=bond0 \
--x UCX_NET_DEVICES=bond0 \
--x NCCL_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_6,mlx5_7,mlx5_8,mlx5_9 \
--x PATH=/usr/local/openmpi/bin:$PATH \
--x LD_LIBRARY_PATH=/usr/local/openmpi/lib:$LD_LIBRARY_PATH \
---mca plm_rsh_args "-p 22" \
-./build/reduce_scatter_perf_mpi -b 8 -e 16G -f 2 -g 1 -n 50
-```
-
-# Preparation Acceptance Checklist
-
-### Environment Configuration
-
-Based on actual installation
-
-| Item                         | Completed | Actual Completed Version |
-|------------------------------|-----------|--------------------------|
-| OS                           | ✅         | Ubuntu 24.04.3 LTS       |
-| driver version               | ✅         | `>=570`                  |
-| cuda version                 |           | `>=12.9`                 |
-| docker version               |           | `>=26  `                 |
-| nvidia-container-cli version |           | 1.18.0                   |
-| root account                 |           |                          |
-| Shared storage               |           | /path/to/share           |
-| Local NVMe /data disk        |           | /data, 3TB               |
-| miniforge                    |           |                          |
-| pssh                         |           |                          |
-| ansible                      |           |                          |
-
-### cuBLAS Bench Results
-
-Submit log files
-
-### NCCL Test Results
-
-packet=16G
-
-| Vendor | GPU*GPUs_per_node*Nodes | AllReduce busbw(GB/s) | All2All busbw(GB/s) | AllGather busbw(GB/s) | ReduceScatter busbw(GB/s) | NIC |
-|:------:|:-----------------------:|:---------------------:|:-------------------:|:---------------------:|:-------------------------:|:---:|
-|  xxx   |        xxx\*8\*1        |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
-|  xxx   |        xxx\*8\*2        |          ...          |         ...         |          ...          |            ...            | ... |
-|  xxx   |        xxx\*8\*4        |          xxx          |         xxx         |          xxx          |            xxx            | CX? |
-|  ...   |           ...           |          ...          |         ...         |          ...          |            ...            | ... |
+**A gate with no output has not been accepted.** The packaging script names any
+missing gate rather than silently omitting it.

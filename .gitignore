@@ -11,3 +11,35 @@
 *.swp
 *.swo
 *~
+
+# Site-specific configuration — set_env.sh is generated from
+# nccl_bench/set_env.example.sh and holds values that differ per cluster.
+nccl_bench/set_env.sh
+
+# Node lists: the vendors' addresses, not ours
+preflight/hosts.txt
+nccl_bench/hosts.txt
+host2.txt
+host4.txt
+host8.txt
+host16.txt
+host32.txt
+host64.txt
+host128.txt
+host256.txt
+host_all.txt
+
+# Gate outputs. These are the deliverables — they belong in the submission
+# tarball, not in git.
+results/
+perftest_results/
+percard_cluster/
+torch_peak_cluster_zero/
+cublas_bench_*.log
+nccltest_*.log
+1node_nccltest_*.log
+results_*.tar.gz
+
+# Python bytecode
+__pycache__/
+*.pyc

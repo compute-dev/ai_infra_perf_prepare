@@ -1,112 +1,95 @@
 #!/bin/bash
-
+# ============================================================================
+# install_env.sh — install what this repository actually needs, on the machine
+#                  you drive the tests from (the "control machine").
+#
+# The four gates are plain shell + python3 + ssh + docker. There is no conda
+# environment, no pssh, no object-storage client and no Python package to
+# install. This script only fills in OS-level gaps.
+#
+# It is safe to re-run. It does not modify sshd configuration or any keys.
+#
+# Usage:
+#     sudo bash install_env.sh
+# ============================================================================
 set -e
 
-ARCH=$(uname -m)
-echo "Detected system architecture: $ARCH"
+echo "=== checking prerequisites for ai_infra_perf_prepare ==="
 
-# Select the corresponding miniforge installer based on architecture
-# Network detection: if google.com is reachable = overseas, otherwise = China mainland
-if curl -s --connect-timeout 2 https://www.google.com > /dev/null; then
-    # Overseas: use official GitHub URL (faster)
-    USE_CHINA_MIRROR=false
-    echo "✅ Overseas network detected, using official download source"
-    if [ "$ARCH" = "x86_64" ]; then
-        MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        MINIFORGE_URL="https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh"
-    fi
+# Detect the package manager
+if command -v apt-get >/dev/null 2>&1; then
+    PM="apt-get"
+    PM_INSTALL="apt-get install -y"
+elif command -v dnf >/dev/null 2>&1; then
+    PM="dnf"
+    PM_INSTALL="dnf install -y"
+elif command -v yum >/dev/null 2>&1; then
+    PM="yum"
+    PM_INSTALL="yum install -y"
 else
-    # China mainland: automatically switch to Tsinghua mirror
-    USE_CHINA_MIRROR=true
-    echo "📶 China mainland network detected, automatically switching to Tsinghua mirror for acceleration"
-    if [ "$ARCH" = "x86_64" ]; then
-        MINIFORGE_URL="https://mirrors.tuna.tsinghua.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh"
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-        MINIFORGE_URL="https://mirrors.tuna.tsinghua.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-aarch64.sh"
-    fi
+    echo "[ERROR] no supported package manager (apt-get / dnf / yum)" >&2
+    exit 1
 fi
+echo "[INFO] package manager: ${PM}"
 
-# Check and clean up existing miniforge installation
-if [ -d ~/miniforge3 ]; then
-    echo "Existing Miniforge installation detected, removing..."
-    rm -rf ~/miniforge3
-fi
+# What each gate actually needs on the control machine:
+#   bash, ssh, scp, rsync  - transport to the nodes
+#   sshpass                - only for the one-time key push (tools/setup_ssh_keyless.sh)
+#   python3                - all parsers and the summariser
+#   tar, gzip              - tools/collect_results.sh
+#   git, git-lfs           - this repo tracks large .so files with git-lfs
+#   curl, wget             - fetching images / general use
+PKGS="bash openssh-client rsync sshpass python3 tar gzip curl wget git ca-certificates"
 
-# Detect system type and install wget
-echo "Detecting system type..."
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$ID
-    echo "Detected system: $OS"
-else
-    echo "Warning: Unable to detect system type, trying default method"
-    OS="unknown"
-fi
-
-# Install dependencies based on system type
-echo "Installing dependencies: wget net-tools unzip..."
-if [[ "$OS" == "ubuntu" ]] || [[ "$OS" == "debian" ]]; then
+if [ "${PM}" = "apt-get" ]; then
     apt-get update
-    apt-get install -y wget net-tools unzip
-elif [[ "$OS" == "centos" ]] || [[ "$OS" == "rhel" ]] || [[ "$OS" == "rocky" ]] || [[ "$OS" == "almalinux" ]]; then
-    yum install -y wget
-else
-    echo "Trying generic method to install wget..."
-    if command -v apt-get &> /dev/null; then
-        apt-get update && apt-get install -y wget
-    elif command -v yum &> /dev/null; then
-        yum install -y wget
+fi
+
+# shellcheck disable=SC2086
+${PM_INSTALL} ${PKGS} || {
+    echo "[WARN] some packages failed to install; continuing to check what is present" >&2
+}
+
+# git-lfs is packaged separately on most distros
+if ! command -v git-lfs >/dev/null 2>&1; then
+    echo "[INFO] installing git-lfs"
+    # shellcheck disable=SC2086
+    ${PM_INSTALL} git-lfs 2>/dev/null || {
+        echo "[WARN] git-lfs not available from the package manager." >&2
+        echo "       cublas_bench/GB300/gemm-memread/ is stored in git-lfs;" >&2
+        echo "       without it you will get pointer files instead of libraries." >&2
+        echo "       See https://git-lfs.com for manual install steps." >&2
+    }
+fi
+
+echo
+echo "=== result ==="
+MISSING=0
+for c in ssh scp rsync sshpass python3 tar git; do
+    if command -v "${c}" >/dev/null 2>&1; then
+        printf "  %-10s %s\n" "${c}" "$(command -v "${c}")"
     else
-        echo "Error: Unable to determine package manager, please install wget manually"
-        exit 1
+        printf "  %-10s MISSING\n" "${c}"
+        MISSING=$((MISSING + 1))
     fi
-fi
-
-# Download and install miniforge
-echo "Starting Miniforge download..."
-wget "$MINIFORGE_URL" -O ~/miniforge3.sh
-
-echo "Starting Miniforge installation..."
-bash ~/miniforge3.sh -b -p ~/miniforge3
-
-echo "Cleaning up installation files..."
-rm -rf ~/miniforge3.sh
-
-# Initialize conda
-echo "Initializing conda..."
-. ~/.bashrc
-~/miniforge3/bin/conda init bash
-
-# Configure pip mirror source
-echo "Configuring pip mirror source..."
-~/miniforge3/bin/pip config set global.index-url https://pypi.org/simple/
-
-# Create bench environment
-echo "Creating bench environment..."
-~/miniforge3/bin/conda create -y -n bench --clone root
-
-echo "Activating bench environment and installing coscmd..."
-# Use conda run to execute commands in the bench environment
-# Install coscmd
-~/miniforge3/bin/conda run -n bench pip install coscmd -i https://pypi.org/simple/
-
-# Install ansible
-echo "Activating bench environment and installing ansible..."
-~/miniforge3/bin/conda run -n bench pip install ansible
-
-# ===================== pssh =====================
-echo "Installing pssh (automatically selecting the fastest source)..."
-if [ "$USE_CHINA_MIRROR" = true ]; then
-    echo "📶 China mainland network: installing pssh via Gitee high-speed mirror"
-    ~/miniforge3/bin/conda run -n bench pip install git+https://gitee.com/cxxsheng/pssh.git
+done
+if command -v git-lfs >/dev/null 2>&1; then
+    printf "  %-10s %s\n" "git-lfs" "$(command -v git-lfs)"
 else
-    echo "✅ Overseas network: installing pssh via official GitHub"
-    ~/miniforge3/bin/conda run -n bench pip install git+https://github.com/lilydjwg/pssh
+    printf "  %-10s MISSING  (needed to check out the GEMM libraries)\n" "git-lfs"
+    MISSING=$((MISSING + 1))
 fi
-# ======================================================================
 
-# ===================== Set auto-activate bench environment =====================
-echo "Setting bench environment to auto-activate on login..."
-echo "conda activate bench" >> ~/.bashrc
-# ======================================================================
+if [ "${MISSING}" -gt 0 ]; then
+    echo
+    echo "[WARN] ${MISSING} prerequisite(s) still missing."
+    exit 1
+fi
+
+echo
+echo "[OK] control machine ready."
+echo
+echo "Next: set up passwordless ssh to the nodes, then run gate 0."
+echo "  cp preflight/hosts.txt.example preflight/hosts.txt && vim preflight/hosts.txt"
+echo "  NODE_PASSWORD='...' bash tools/setup_ssh_keyless.sh preflight/hosts.txt --port 22"
+echo "  cd preflight && bash cluster_runtime_check.sh -H hosts.txt -P 22 -o ../results/preflight/runtime.csv"

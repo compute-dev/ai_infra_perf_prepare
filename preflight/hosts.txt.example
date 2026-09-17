@@ -1,0 +1,26 @@
+# hosts.txt -- one address per line, for cluster_runtime_check.sh / cluster_spec_check.sh
+# ---------------------------------------------------------------------------
+# Put one SSH-reachable host per line.  Lines starting with '#' are comments
+# and are ignored, as are blank lines.  Only the first whitespace-separated
+# token of each line is used as the address, so you may append a trailing
+# comment after the address.
+#
+# The addresses must be reachable over plain SSH on the port you pass with
+# -P (default 22) and the user you pass with -u (default root).  There is no
+# jump-host, no shared NFS, no parallel-ssh fan-out: the collector scripts
+# are piped to each node over stdin via `ssh ... 'bash -s -- -j'`.
+#
+# If a node is not reachable, do NOT silently delete it -- leave it in the
+# list so it is explicitly counted in the report as unreachable.  Remove a
+# node only when you intend to exclude it from the audit.
+#
+# Examples (replace these with your real nodes):
+#   10.0.0.1
+#   10.0.0.2
+#   gpu-node-03
+#   10.0.0.4   # storage-rail only
+#
+# --- uncomment and edit below ---
+# 10.0.0.1
+# 10.0.0.2
+# 10.0.0.3

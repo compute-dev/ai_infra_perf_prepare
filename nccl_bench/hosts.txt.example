@@ -1,0 +1,15 @@
+# One node address per line. Lines starting with # and blank lines are ignored.
+# Everything after the address on a line is ignored too, so you can annotate.
+#
+# These are the addresses the container uses for both:
+#   - mpirun -H          (peer-to-peer ssh, port 7900 inside the container)
+#   - NCCL_SOCKET_IFNAME (the bootstrap/TCP interface on each node)
+# so they must be the addresses bound to NETWORK_IF in set_env.sh, and they must
+# be reachable from each other.
+#
+# Order matters for split_ip.sh: it takes nodes in file order, and for GB racks
+# it expects one rack's nodes to be contiguous (18 per rack).
+#
+# node01  # optional comment
+# node02
+# node03

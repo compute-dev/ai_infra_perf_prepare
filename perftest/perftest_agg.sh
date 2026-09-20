@@ -93,16 +93,25 @@ echo "[INFO] nodes: A=${NODE_A} B=${NODE_B}  size=${SZ}B qps=${QPS} runs=${RUNS}
 
 # ---- devices ---------------------------------------------------------------
 if [ -z "${DEVLIST}" ]; then
-    mapfile -t DEVLIST_ARR < <(_ssh "${NODE_A}" "for d in /sys/class/infiniband/*; do \
-        [ -e \"\$d/ports/1/state\" ] || continue; \
-        [ \"\$(cat \$d/ports/1/state 2>/dev/null)\" = '4: ACTIVE' ] && basename \$d; \
-      done | sort -V")
-    if [ "${#DEVLIST_ARR[@]}" -eq 0 ]; then
-        echo "[ERROR] no RDMA device with an ACTIVE port on ${NODE_A}" >&2
-        exit 1
+    # Prefer GPU-affine compute rails over "every ACTIVE device", which also
+    # picks up management/storage NICs that have no matching peer rail.
+    DEVLIST="$(_ssh_script "${NODE_A}" \
+        "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nccl_bench/gpu_nic_topo.sh" \
+        --nccl-hca 2>/dev/null | tail -1 | tr ',' ' ')"
+    if [ -n "${DEVLIST}" ]; then
+        echo "[INFO] devices auto-selected from GPU-NIC affinity: ${DEVLIST}" | tee -a "${LOG}"
+    else
+        mapfile -t DEVLIST_ARR < <(_ssh "${NODE_A}" "for d in /sys/class/infiniband/*; do \
+            [ -e \"\$d/ports/1/state\" ] || continue; \
+            [ \"\$(cat \$d/ports/1/state 2>/dev/null)\" = '4: ACTIVE' ] && basename \$d; \
+          done | sort -V")
+        if [ "${#DEVLIST_ARR[@]}" -eq 0 ]; then
+            echo "[ERROR] no RDMA device with an ACTIVE port on ${NODE_A}" >&2
+            exit 1
+        fi
+        DEVLIST="${DEVLIST_ARR[*]}"
+        echo "[INFO] fell back to ACTIVE devices: ${DEVLIST}" | tee -a "${LOG}"
     fi
-    DEVLIST="${DEVLIST_ARR[*]}"
-    echo "[INFO] auto-discovered devices: ${DEVLIST}" | tee -a "${LOG}"
 fi
 
 # ---- GID -------------------------------------------------------------------

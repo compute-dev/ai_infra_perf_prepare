@@ -132,14 +132,24 @@ echo "[INFO] nodes: A=${NODE_A} B=${NODE_B}  size=${SZ}B iters=${N} ssh_port=${S
 
 # ---- device list -----------------------------------------------------------
 if [ -z "${DEVLIST}" ]; then
-    mapfile -t DEVLIST_ARR < <(discover_devices "${NODE_A}")
-    if [ "${#DEVLIST_ARR[@]}" -eq 0 ]; then
-        echo "[ERROR] no RDMA device with an ACTIVE port on ${NODE_A}." >&2
-        echo "        Check: ls /sys/class/infiniband/  and  ibstat" >&2
-        exit 1
+    # Prefer the GPU-affine compute rails. Auto-discovering "every ACTIVE
+    # device" also sweeps in management/storage NICs, which have no peer on the
+    # same rail and just add FAIL rows and runtime.
+    DEVLIST="$(_ssh_script "${NODE_A}" \
+        "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nccl_bench/gpu_nic_topo.sh" \
+        --nccl-hca 2>/dev/null | tail -1 | tr ',' ' ')"
+    if [ -n "${DEVLIST}" ]; then
+        echo "[INFO] devices auto-selected from GPU-NIC affinity: ${DEVLIST}" | tee -a "${LOG}"
+    else
+        mapfile -t DEVLIST_ARR < <(discover_devices "${NODE_A}")
+        if [ "${#DEVLIST_ARR[@]}" -eq 0 ]; then
+            echo "[ERROR] no RDMA device with an ACTIVE port on ${NODE_A}." >&2
+            echo "        Check: ls /sys/class/infiniband/  and  ibstat" >&2
+            exit 1
+        fi
+        DEVLIST="${DEVLIST_ARR[*]}"
+        echo "[INFO] fell back to ${#DEVLIST_ARR[@]} ACTIVE device(s) on ${NODE_A}: ${DEVLIST}" | tee -a "${LOG}"
     fi
-    DEVLIST="${DEVLIST_ARR[*]}"
-    echo "[INFO] auto-discovered ${#DEVLIST_ARR[@]} ACTIVE device(s) on ${NODE_A}: ${DEVLIST}" | tee -a "${LOG}"
 
     # The peer must expose the same rails, or only some pairs will be comparable
     PEER_DEVICES="$(discover_devices "${NODE_B}")"

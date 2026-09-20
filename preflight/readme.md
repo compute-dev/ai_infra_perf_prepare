@@ -74,6 +74,22 @@ over stdin (`ssh ... 'bash -s -- -j'`), so there is no shared filesystem, no
 parallel-ssh fan-out tool, and no conda requirement. `hosts.txt` lists one
 SSH-reachable address per line; `#` comments and blank lines are ignored.
 
+### Output
+
+The two CSVs **are** the gate-0 deliverable — they are the evidence that the
+cluster is homogeneous. Write them into the results tree so the packaging step
+finds them:
+
+```bash
+mkdir -p results/preflight
+bash cluster_runtime_check.sh -H hosts.txt -P 22 -u root -o results/preflight/runtime.csv
+bash cluster_spec_check.sh    -H hosts.txt -P 22 -u root -o results/preflight/spec.csv
+```
+
+`cluster_runtime_check.sh` exits `0` when all critical fields agree, `2` when a
+critical field differs or a node is unreachable. Paths given to `-H` and `-o` are
+relative to where you invoke the script.
+
 ---
 
 ## What the two collectors gather

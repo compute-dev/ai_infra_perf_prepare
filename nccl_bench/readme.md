@@ -119,6 +119,35 @@ Compare against [baselines.md](baselines.md), and also confirm every log shows
 `# Out of bounds values : 0` — a non-zero count means the collective returned
 wrong results, which matters more than bandwidth.
 
+## Step 6 — collect the logs
+
+The logs live **inside the container**. They are invisible to
+`tools/collect_results.sh` until they are on the host, so copy them out on the
+node where the tests ran:
+
+```bash
+bash collect_logs.sh                          # -> ../results/nccl/
+bash collect_logs.sh --out /tmp/nccl_logs     # or wherever you like
+```
+
+If you ran the tests on a node and want the logs back on the control machine:
+
+```bash
+scp -P <PORT> -r <USER>@<node>:/data/ai_infra_perf_prepare/results/nccl/* results/nccl/
+```
+
+**Output:** `results/nccl/nccltest_<op>.log` for the multi-node run and
+`1node_nccltest_<op>.log` for the single-node one. That is the directory the
+packaging step expects.
+
+## Step 7 — stop the containers
+
+```bash
+for h in $(cat hosts.txt); do
+  ssh -p <PORT> <USER>@$h 'docker stop nccltest >/dev/null 2>&1; docker rm nccltest >/dev/null 2>&1'
+done
+```
+
 ## Multi-node judgement rules
 
 - **All2All drops to ~10–20 % when it crosses nodes on every GPU generation.**
@@ -145,6 +174,7 @@ wrong results, which matters more than bandwidth.
 | `close_acs.sh` | Disable PCIe ACS (host-level, needs root) |
 | `split_ip.sh` | Generate power-of-two host lists |
 | `parse_nccl_log.py` | Extract peak / at-size busbw from logs |
+| `collect_logs.sh` | Copy the logs out of the container into `results/nccl/` |
 | `baselines.md` | Reference busbw values and judgement rules |
 | `Dockerfile` | Builds an image with nccl-tests + sshd |
 | `set_env.example.sh` | Config template |

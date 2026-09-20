@@ -14,6 +14,7 @@
 #   bash nccltest_autoconf.sh --apply         # also write set_env.sh (backs up any existing one)
 #   bash nccltest_autoconf.sh -H hosts.txt    # also check every node is reachable and consistent
 #   bash nccltest_autoconf.sh --ssh-port 22   # host ssh port used for the -H check
+#   bash nccltest_autoconf.sh --ssh-user root # ssh user for the nodes (default: from ssh config)
 #
 # Exit codes: 0 ok, 1 bad usage/dependency, 2 detection problem worth reading.
 # ============================================================================
@@ -27,12 +28,15 @@ GID_HELPER="${REPO_DIR}/tools/detect_roce_gid.sh"
 APPLY=0
 HOSTS_FILE=""
 SSH_PORT="${SSH_PORT:-22}"
+# Empty means "use whatever user your ~/.ssh/config already specifies".
+SSH_USER="${SSH_USER:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --apply)     APPLY=1; shift ;;
         -H|--hosts)  HOSTS_FILE="${2:-}"; shift 2 ;;
         --ssh-port)  SSH_PORT="${2:-}"; shift 2 ;;
+        -u|--ssh-user) SSH_USER="${2:-}"; shift 2 ;;
         -h|--help)   sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "[ERROR] unknown argument: $1 (use -h)" >&2; exit 1 ;;
     esac
@@ -159,6 +163,8 @@ fi
 # Optional reachability check
 # ---------------------------------------------------------------------------
 SSHX="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -p${SSH_PORT}"
+# Only force a user when one was given; otherwise the ssh config decides.
+[ -n "${SSH_USER}" ] && SSHX="${SSHX} -l ${SSH_USER}"
 if [ -n "${HOSTS_FILE}" ] && [ -f "${HOSTS_FILE}" ]; then
     echo ""
     echo "--- SSH reachability (port ${SSH_PORT}) ---"

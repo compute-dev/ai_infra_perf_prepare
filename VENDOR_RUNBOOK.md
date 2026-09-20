@@ -1,304 +1,436 @@
-# Vendor runbook
+# Vendor runbook — step by step
 
-Step-by-step procedure for preparing a cluster and producing the acceptance
-measurements. Each gate lists the exact commands, the artefact it should
-produce, and the pass criterion.
+Follow this top to bottom. Every gate writes into `results/<gate>/` and the
+packaging script at the end collects all four. If a step produces no output,
+that gate has **not** been accepted.
 
-If you only read one section, read [Before you start](#before-you-start) and
-[How results are judged](#how-results-are-judged).
+Replace these placeholders as you go:
 
-## Contents
+| Placeholder | Meaning | Example |
+| --- | --- | --- |
+| `<IMAGE>` | CUDA container image (see [Choosing an image](#choosing-an-image)) | `nvcr.io/nvidia/pytorch:25.05-py3` |
+| `<GPU>` | GPU model, matches the baseline tables | `H800`, `H20`, `B200` |
+| `<NODE_DIR>` | Path where this repo lives on the **nodes** | `/data/ai_infra_perf_prepare` |
+| `<PORT>` | SSH port of the nodes | `22` |
+| `<USER>` | SSH user on the nodes | `root` |
 
-1. [Before you start](#before-you-start)
-2. [Gate 0 — node consistency](#gate-0--node-consistency)
-3. [Gate 1 — single-GPU compute (cuBLAS)](#gate-1--single-gpu-compute-cublas)
-4. [Gate 2 — NCCL interconnect](#gate-2--nccl-interconnect)
-5. [Gate 3 — RDMA point-to-point](#gate-3--rdma-point-to-point)
-6. [Packaging and submission](#packaging-and-submission)
+Run everything from the **control machine** — the machine that can ssh to every
+node — except where a step says otherwise.
 
 ---
 
-## Before you start
-
-### On the control machine
+## Step 0 — prepare the control machine
 
 ```bash
-sudo bash install_env.sh          # ssh, sshpass, python3, git-lfs, tar
+sudo bash install_env.sh
 ```
 
-`git-lfs` matters: `cublas_bench/GB300/gemm-memread/` holds large `.so` files
-under git-lfs. Without it you get pointer files, not libraries.
+Installs `ssh`, `sshpass`, `rsync`, `python3`, `tar` and **`git-lfs`**. The
+git-lfs part matters: `cublas_bench/GB300/gemm-memread/` is tracked with it, and
+without it you get pointer files instead of libraries.
 
-### On the cluster
-
-| Requirement | Why | How to check |
-| --- | --- | --- |
-| `nvidia-smi` works on every node | everything depends on it | `nvidia-smi -L` |
-| Docker + NVIDIA container toolkit | the tests run in a container | `docker run --rm --gpus all <cuda-image> nvidia-smi` |
-| **PCIe ACS disabled** | ACS blocks peer-to-peer DMA, halving intra-node bandwidth | `bash nccl_bench/close_acs.sh` per node, then reboot |
-| Persistence mode on | avoids clock ramp-up noise between runs | `nvidia-smi -pm 1` |
-| 8 compute HCAs ACTIVE per node | the fabric must be fully cabled | `ls /sys/class/infiniband/`, check each `ports/1/state` is `4: ACTIVE` |
-| Interface names identical fleet-wide | `mpirun` and NCCL bind by name | `ip -o -4 route show default` on several nodes |
-| **memlock unlimited** (gate 3) | otherwise `ibv_reg_mr` fails and every RDMA test errors out | `ulimit -l` → should be `unlimited` |
-| `perftest` installed (gate 3) | `ib_write_bw` etc. | `ib_write_bw --version` |
-| Root ssh between nodes (gate 2) | `mpirun` spawns ranks over ssh | see below |
-
-### Passwordless ssh
-
-Gate 2 drives `mpirun`, which ssh's to each node **as root from inside the
-container**. Gate 0 and gate 1 also assume you can reach the nodes.
+## Step 1 — write the node list
 
 ```bash
 cp preflight/hosts.txt.example preflight/hosts.txt
-vim preflight/hosts.txt                       # one address per node
-
-# This machine -> nodes (used by gates 0, 1 and 3)
-NODE_PASSWORD='...' bash tools/setup_ssh_keyless.sh preflight/hosts.txt --port 22
+vim preflight/hosts.txt
 ```
 
-Inside the container, gate 2 handles node-to-node ssh itself (the image ships a
-keypair generated at build time), so you do not need to configure that.
+One entry per line, `#` comments allowed. Each entry is whatever **you** ssh to
+the node with — a plain address (`10.0.0.11`) or an `~/.ssh/config` alias
+(`node01`), in which case the port, user and any jump host come from that config
+and you can drop the `-P` / `-u` arguments in the later steps. Aliases are the
+easier option when the nodes are not directly reachable.
 
-Set `--port` / `--user` to match your environment throughout; every script takes
-them. **Write them down** — a wrong port is the most common cause of "nothing
-works".
+This list is used by gates 0, 1 and 3 and by the control loops in Step 6. Gate 2
+needs a **second, different** list of addresses — see 6b.
 
----
-
-## Gate 0 — node consistency
-
-**Why first:** `driver_version` matching does **not** mean the nodes match. A
-node with cuda-compat shadowing libcuda, a different ECC setting, a different
-power limit, or one HCA down will still report the same driver version — and it
-will quietly invalidate every cuBLAS and NCCL comparison that follows.
+## Step 2 — set up passwordless ssh
 
 ```bash
-cd preflight
-bash cluster_runtime_check.sh -H hosts.txt -P 22 -o ../results/preflight/runtime.csv
-bash cluster_spec_check.sh    -H hosts.txt -P 22 -o ../results/preflight/spec.csv
+NODE_PASSWORD='<node password>' \
+  bash tools/setup_ssh_keyless.sh preflight/hosts.txt --port <PORT> --user <USER>
 ```
 
-**What it does:** collects ~35 runtime fields (B1–B8: driver stack, ECC, clocks
-and power, the compute HCAs, the RDMA stack, kernel/OS, the bench image, and the
-fabric — RoCE GID index, QoS, GPU-NIC rail topology, NVLink), takes the **most
-common value** of each field across the fleet as the baseline, and flags nodes
-that deviate.
+Every line should print `[ OK ]`. Re-running is safe — the key is appended and
+de-duplicated, never overwritten.
 
-**Pass criterion:** exit code 0. **Critical (`★`) fields differing → exit 2 →
-FAIL.** Advisory fields only warn. An unreachable node also fails.
+## Step 3 — distribute the repo to every node
 
-The two CSVs are the deliverable — they are your "the cluster is homogeneous"
-evidence.
+Gates 1 and 2 need the repo on the nodes. Gate 0 and gate 3 do not (they pipe
+scripts over ssh), but doing it once here keeps everything uniform.
 
-**If a node is unreachable or drifted:** exclude it explicitly, re-run, and note
-the coverage (M/N nodes) in the report. Do not silently drop nodes — an
-unstated exclusion is indistinguishable from a node that was never tested.
+```bash
+NODES=$(grep -vE '^[[:space:]]*(#|$)' preflight/hosts.txt | awk '{print $1}')
 
-> Auto-detection nuance: by default the compute-HCA set is every HCA with an
-> ACTIVE port. On a node with storage NICs that can sweep extra devices in.
-> That is fine for a *consistency* check (the outlier still shows up), but if you
-> want the check scoped to the training fabric, set `COMPUTE_HCA_RE` and/or
-> `EXCLUDE_HCA`. See `preflight/readme.md`.
+for h in $NODES; do
+  ssh -p <PORT> -o BatchMode=yes <USER>@$h "mkdir -p $(dirname <NODE_DIR>)"
+  rsync -a --delete \
+        --exclude '.git' --exclude 'cublas_bench/GB300' --exclude 'results' \
+        --exclude '__pycache__' --exclude '*.log' --exclude '*.tar.gz' \
+        ./ <USER>@$h:<NODE_DIR>/
+  echo "$h done"
+done
+```
+
+Check it:
+
+```bash
+ssh -p <PORT> <USER>@<first node> "ls <NODE_DIR>"
+```
+
+Reminder of the exact path you used — gates 1 and 2 take it as an argument.
 
 ---
 
-## Gate 1 — single-GPU compute (cuBLAS)
+## Step 4 — Gate 0: node consistency
 
-**What it proves:** every card reaches its expected GEMM throughput. This is how
-you find an individual weak, throttled or degraded board — the kind of problem
-that gets averaged away inside a full training run.
+**Why first:** `driver_version` matching does **not** mean the nodes match. Drift
+here silently invalidates every later comparison.
+
+```bash
+mkdir -p results/preflight
+
+bash preflight/cluster_runtime_check.sh \
+     -H preflight/hosts.txt -P <PORT> -u <USER> \
+     -o results/preflight/runtime.csv
+
+bash preflight/cluster_spec_check.sh \
+     -H preflight/hosts.txt -P <PORT> -u <USER> \
+     -o results/preflight/spec.csv
+```
+
+**Expected:** both exit `0`, and `results/preflight/` contains two CSVs.
+
+**If a critical (`★`) field differs → exit 2.** Exclude that node from
+`preflight/hosts.txt`, re-run both, and record which nodes you excluded and why.
+Do not drop a node silently.
+
+> The compute-HCA set is auto-detected as "every HCA with an ACTIVE port", which
+> can include a storage/management NIC. That is fine for a consistency check. If
+> you want it scoped to the training fabric, set `COMPUTE_HCA_RE` and/or
+> `EXCLUDE_HCA` — see `preflight/readme.md`.
+
+---
+
+## Step 5 — Gate 1: single-GPU compute (cuBLAS)
+
+### 5a. Quick check first (one node, GPU 0 only)
+
+Do this before committing to a fleet sweep — it validates the image and the
+binary. Use the node the tests will run on, or any node:
 
 ```bash
 cd cublas_bench
+GPU_NAME=<GPU> image=<IMAGE> bash auto_cublas_bench_by_docker.sh
+cd ..
 ```
 
-### Quick check first (one node, one card)
+**Expected:** a table of 6 precisions ending in `Result: ALL PASS`, exit `0`.
+
+> This only exercises **GPU 0**. "This node passed" does not mean all 8 cards
+> passed — that is what 5b is for.
+
+### 5b. Full fleet, every card
 
 ```bash
-GPU_NAME=H800 image=<cuda-image> bash auto_cublas_bench_by_docker.sh
+bash cublas_bench/cluster_cublas_percard.sh \
+     -H preflight/hosts.txt -P <PORT> -u <USER> \
+     -i <IMAGE> -g <GPU> \
+     -s <NODE_DIR>/cublas_bench
 ```
 
-This validates the image and the binary before you commit to a fleet sweep.
+`-s` is the path to `cublas_bench` **on the nodes** — the path from Step 3. If
+you get it wrong the run fails with `no_bench_script` immediately.
 
-> **It only exercises GPU 0.** `--gpus all` exposes the cards; the binary has no
-> device argument. "This node passed" does **not** mean all 8 cards passed.
+Runtime is roughly 5 minutes per card, so ~40 minutes for a node with 8 GPUs.
+Use `--preflight` first if you want to check connectivity and the image without
+running anything.
 
-### Full fleet, every card
+**Expected:** `results/cublas/percard_cluster/<node>/dev<N>.log` (one per card),
+plus `fleet_percard.csv` and an outlier report.
 
-```bash
-bash cluster_cublas_percard.sh \
-    -H ../preflight/hosts.txt -P 22 -u root \
-    -i <cuda-image> -g H800
-```
+**How to read it:** the headline is **cross-fleet consistency** — a card that
+reads consistently low across several precisions is a weak card. A cross-fleet
+spread of ~5–6 % is normal; within one node expect under ~3%. A single precision
+slightly under baseline is usually a shape artifact, not a bad board.
 
-Runs every card of every node and aggregates with outlier detection.
-
-**Artefacts:** `results/cublas/percard_cluster/<node>/dev<N>.log`, plus
-`fleet_percard.csv` and an outlier report.
-
-**Pass criterion — this is the part people get wrong:**
-
-- The headline judgement is **cross-fleet consistency**, not "every precision
-  beat the baseline". A card that reads **consistently low across several
-  precisions** is a weak card.
-- A cross-fleet spread of ~5–6 % is normal. Within one node it should be under
-  ~3 %.
-- A **single** precision slightly under baseline is often a shape or algorithm
-  artifact, not a bad board. Investigate before escalating.
-
-### Second opinion (optional but recommended)
-
-`torch_peak_probe.py` measures the same shapes through PyTorch on the real
-framework path, which distinguishes "this card is weak" from "this tool reads
-this card oddly". Two traps, both of which have cost real time:
-
-- **Use `--zero` (the default) to compare against cuBLAS.** Random input reads
-  ~8–12 % lower, so a `--randn` run compared against a `-B=0` cuBLAS number
-  looks like a failure when it is not.
-- **H800 TF32 via cuBLAS `sss_fast_tf32` can read about half speed on some
-  boards. This is a cuBLAS tool artifact, not a weak card** — real frameworks use
-  `allow_tf32`, where the same board is full speed. Judge H800 TF32 on torch
-  `allow_tf32`. Do not RMA a board on the `sss_fast_tf32` number.
-
-Also ignore `libcompat_fix.so ... cannot be preloaded` lines in the log: that is
-the host's `/etc/ld.so.preload` leaking into the container and is unrelated to
-the result.
+> **Ignore `libcompat_fix.so ... cannot be preloaded`** in the logs — that is the
+> host's `/etc/ld.so.preload` leaking into the container.
+>
+> **H800 TF32 via cuBLAS `sss_fast_tf32` can read about half speed on some
+> boards. That is a cuBLAS artifact, not a weak card** — real frameworks use
+> `allow_tf32`, where the same board is full speed. Judge H800 TF32 on torch
+> `allow_tf32`, never on the `sss_fast_tf32` number.
 
 ---
 
-## Gate 2 — NCCL interconnect
+## Step 6 — Gate 2: NCCL interconnect
 
-**What it proves:** intra-node NVLink bandwidth and inter-node RDMA bandwidth
-for the four collectives that matter, at several cluster sizes.
+### 6a. Derive the cluster-specific parameters
+
+Run this **on one of the nodes**, not on the control machine — it inspects that
+node's GPUs and RDMA devices.
 
 ```bash
-cd nccl_bench
+FIRST=$(grep -vE '^[[:space:]]*(#|$)' preflight/hosts.txt | awk '{print $1}' | head -1)
 
-# 1. derive every cluster-specific value (interface, HCA list, GID index, image)
-bash nccltest_autoconf.sh -H hosts.txt
-bash nccltest_autoconf.sh --apply          # writes set_env.sh
-
-# 2. host lists
-cp hosts.txt.example hosts.txt && vim hosts.txt
-bash split_ip.sh                            # host8.txt, host16.txt, host32.txt, ...
-
-# 3. start the container on EVERY node (see nccl_bench/readme.md for the loop)
-# 4. from ONE node:
-docker exec -i nccltest bash -c "bash /root/1node_nccltest.sh"
-docker exec -i nccltest bash -c \
-  "HOSTS_FILE=/root/hosts_dir/hosts.txt NCCL_SOCKET_IFNAME=<iface> \
-   bash /root/run_nccltest.sh allreduce all2all allgather reducescatter \
-   | tee /root/nccltest_all.log"
-
-# 5. copy the logs out
-mkdir -p ../results/nccl
-docker cp nccltest:/root/. ../results/nccl/
+ssh -p <PORT> <USER>@$FIRST \
+  'cd <NODE_DIR>/nccl_bench && bash nccltest_autoconf.sh --apply'
 ```
 
-Run the **single-node** test first: it isolates the NVLink domain from the
-fabric, so a node-local problem does not masquerade as a network problem.
+Read the output and fix anything marked `[WARN]` before continuing. **Write down
+`NETWORK_IF`, `NCCL_IB_HCA` and `NCCL_IB_GID_INDEX`** — you need them in 6c–6e.
+`--apply` writes `set_env.sh` on the node.
 
-Run at **several scales** (1, 2, 4, 8, ... nodes). The bandwidth curve as a
-function of scale is the interesting result — a flat curve that falls off at
-some size points at spine oversubscription. Report the scale at which it bends.
+### 6b. Write the **bootstrap** host list
 
-**Pass criterion:** peak out-of-place busbw at the 16G message size, compared
-against `nccl_bench/baselines.md` at the **same GPU / GPUs-per-node / node-count**
-scale. ~90 % of the matching baseline is normal.
+There are **two different address spaces** here, and mixing them up is the
+single most common way to get this gate wrong:
 
-Two rules that prevent false alarms:
+| List | Holds | Used by |
+| --- | --- | --- |
+| `preflight/hosts.txt` (Step 1) | addresses **you** ssh to | gates 0, 1, 3 and the control loops below |
+| `nccl_bench/hosts.txt` (this step) | each node's address **on `NETWORK_IF`** | `mpirun` and NCCL, inside the container |
 
-- **Cross-node All2All legitimately collapses to ~10–20 % of the single-node
-  figure**, on every GPU generation. It is how the collective works. Never judge
+If your ssh path and your training network are the same, the two lists are
+identical and you can just copy the file. If they differ — for example when you
+reach the nodes through a bastion — they are **not**:
+
+```bash
+cp hosts.txt.example hosts.txt
+vim hosts.txt          # one NETWORK_IF address per node, in the same order
+```
+
+> Being behind a bastion changes only the **ssh** list. Commands in 6c–6e
+> therefore ssh to the nodes using `preflight/hosts.txt` (aliases work there,
+> with the port and jump host coming from your ssh config), while the container
+> is told to use `nccl_bench/hosts.txt`. Do not ssh to the bootstrap addresses.
+
+### 6c. Start the container on every node
+
+```bash
+# ssh here uses the SSH list; the container's HOSTS_FILE uses the BOOTSTRAP list
+SSH_NODES=$(grep -vE '^[[:space:]]*(#|$)' preflight/hosts.txt | awk '{print $1}')
+IMAGE_NAME=<IMAGE>
+NCCL_SOCKET_IFNAME=<NETWORK_IF from 6a>
+
+for h in $SSH_NODES; do
+  echo "=== $h ==="
+  ssh <SSHOPTS> $h "mkdir -p <NODE_DIR>/nccl_bench"
+  rsync -a -e '<SSHCMD>' nccl_bench/hosts.txt $h:<NODE_DIR>/nccl_bench/hosts.txt
+  ssh <SSHOPTS> $h \
+    "cd <NODE_DIR>/nccl_bench && \
+     IMAGE_NAME=$IMAGE_NAME HOSTS_FILE=<NODE_DIR>/nccl_bench/hosts.txt \
+     NCCL_SOCKET_IFNAME=$NCCL_SOCKET_IFNAME bash launch_container.sh >/dev/null 2>&1 && \
+     docker ps --format '{{.Names}}' | grep -q nccltest && echo 'container up'"
+done
+```
+
+`<SSHOPTS>` is whatever your environment needs, e.g. `-p 22 -o BatchMode=yes`, or
+nothing at all when your ssh config already carries the port and jump host.
+`-e '<SSHCMD>'` is the matching `rsync` form, e.g. `-e "ssh -p 22"`.
+
+**Expected:** `container up` for every node.
+
+### 6d. Single-node NVLink test
+
+On any one node (here, the first in the SSH list):
+
+```bash
+FIRST=$(grep -vE '^[[:space:]]*(#|$)' preflight/hosts.txt | awk '{print $1}' | head -1)
+
+ssh <SSHOPTS> $FIRST \
+  'docker exec -i nccltest bash -c "bash /root/hosts_dir/1node_nccltest.sh"'
+```
+
+Run this before the multi-node test: it isolates the NVLink domain from the
+fabric, so a node-local problem cannot masquerade as a network problem.
+
+**Expected:** each of the four collectives ends with `[<op>] exit=0` and
+`# Out of bounds values : 0`.
+
+### 6e. Multi-node test
+
+```bash
+ssh <SSHOPTS> $FIRST \
+  'docker exec -i nccltest bash -c \
+     "HOSTS_FILE=/root/hosts_dir/hosts.txt \
+      NCCL_SOCKET_IFNAME=<NETWORK_IF> NCCL_IB_GID_INDEX=<GID index from 6a> \
+      bash /root/run_nccltest.sh allreduce all2all allgather reducescatter"'
+```
+
+**Expected:** all four report success, each with `# Out of bounds values : 0`.
+
+For other cluster sizes, edit `nccl_bench/hosts.txt` **on the node** (it is
+bind-mounted, so the container picks the change up immediately) and re-run 6e —
+no container restart needed:
+
+```bash
+ssh <SSHOPTS> $FIRST "vim <NODE_DIR>/nccl_bench/hosts.txt"
+```
+
+### 6f. Copy the logs out
+
+Still on `$FIRST` — the logs are inside the container and are useless to the
+packaging script until they are on the host:
+
+```bash
+ssh <SSHOPTS> $FIRST \
+  'cd <NODE_DIR>/nccl_bench && bash collect_logs.sh'
+
+# then bring them back to the control machine
+rsync -a -e '<SSHCMD>' $FIRST:<NODE_DIR>/results/nccl/ results/nccl/
+```
+
+**Expected:** `results/nccl/` contains `nccltest_<op>.log` for each multi-node
+collective and `1node_nccltest_<op>.log` for each single-node one.
+
+### 6g. Stop the containers
+
+```bash
+for h in $SSH_NODES; do
+  ssh <SSHOPTS> $h 'docker stop nccltest >/dev/null 2>&1; docker rm nccltest >/dev/null 2>&1'
+done
+```
+
+**How to read the results:** compare the 16G peak against `nccl_bench/baselines.md`
+at the same GPU / GPUs-per-node / node-count.
+
+- **Cross-node All2All legitimately falls to ~10–20 % of the single-node
+  figure** on every GPU generation. It is how the collective works — never judge
   multi-node All2All against a single-node number.
-- **H800 AllReduce ≈215 GB/s is the hardware spec** (reduced NVLink), not a fault.
-
-Also confirm every log shows `# Out of bounds values : 0`. A non-zero count means
-the collective returned **wrong results** — a correctness failure that matters
-more than bandwidth.
+- **H800 AllReduce ≈215 GB/s is the reduced-NVLink hardware spec**, not a fault.
+- On a rail-optimised fabric, only compare nodes on the same rail/leaf — Step 7
+  tells you whether that constraint applies.
 
 ---
 
-## Gate 3 — RDMA point-to-point
+## Step 7 — Gate 3: RDMA point-to-point
 
-**Why:** bandwith alone does not tell you whether the fabric is healthy. This
-gate measures the raw RDMA path per rail and reads the hardware error counters,
-which is how you separate a fabric fault from an NCCL/config fault.
+Pick two nodes. `perftest` (`ib_write_bw` etc.) must be installed **on the
+nodes**, and `ulimit -l` must be `unlimited` there.
+
+### 7a. Is RDMA confined to one rail?
 
 ```bash
-cd perftest
-
-# 1. Is RDMA confined to one rail? This constrains how gates 2 and beyond may
-#    be grouped and compared — do it first.
-bash rail_isolation_check.sh node01 node02
-
-# 2. Per-rail detail, both directions, with error-counter snapshots
-bash perftest_pair.sh node01 node02
-
-# 3. Per-rail aggregate capacity (multi-QP, judged on peak over 3 runs)
-bash perftest_agg.sh node01 node02
+mkdir -p results/perftest
+bash perftest/rail_isolation_check.sh <nodeA> <nodeB> --ssh-port <PORT> --ssh-user <USER> \
+  | tee results/perftest/rail_isolation.txt
 ```
 
-**Pass criterion:**
+Pass the two nodes however you ssh to them (address or alias). Leave the device
+arguments out — the script picks a GPU-affine compute rail automatically. If your
+nodes name their rails differently, pass `devA devB` explicitly, otherwise you
+will get a misleading verdict.
 
-- A 200G port should read **~193 Gb/s** (~96.7 % of line rate) per single QP;
-  400G ~389 Gb/s. Bidirectional write is roughly 2× unidirectional.
-- Write and send latency **2.5–2.9 µs** on a healthy 200G rail.
-- Aggregate on a 2×200G bonded rail: **~390 Gb/s peak**.
-- **All five error counters must be zero** on every rail, before and after:
-  `out_of_sequence`, `packet_seq_err`, `req_cqe_error`,
-  `local_ack_timeout_err`, `rnr_nak_retry_err`.
+**Expected:** a verdict line. If it says **rail isolated**, then from this point
+on only compare nodes on the same rail/leaf, and know that cross-node pipeline
+parallelism is pairing-sensitive.
 
-Two things that look like faults but are not:
+### 7b. Per-rail detail
 
-- **A single QP pinned to one member port of a bond.** On 802.3ad / LAG the hash
-  fixes a given QP set to one physical port, so a single-QP reading of ~193 Gb/s
-  on a 2×200G rail is correct. Use `perftest_agg.sh`, judge on the **peak**, and
-  run it at least 3 times — a run that reads half is hash luck.
-- **A trial that reports counters as `NA`.** That means the counter could not be
-  read, so the rail is *unverified*, not verified-clean.
+```bash
+bash perftest/perftest_pair.sh <nodeA> <nodeB> --ssh-port <PORT> --ssh-user <USER>
+```
+
+**Expected:** a per-rail table. A 200G port should read **~193 Gb/s** per single
+QP, bidirectional roughly 2×, latency 2.5–2.9 µs. **All five error counters must
+be zero** — grep the raw log for `hw_counters snapshot`.
+
+> A single QP on a bonded rail is pinned to one member port by the LAG hash, so
+> ~193 Gb/s on a 2×200G rail is correct, not half of a broken rail. 7c measures
+> the real capacity.
+
+### 7c. Per-rail aggregate
+
+```bash
+bash perftest/perftest_agg.sh <nodeA> <nodeB> --ssh-port <PORT> --ssh-user <USER>
+```
+
+**Expected:** on a 2×200G bonded rail, **~390 Gb/s peak**, not ~195. Judge on the
+**peak** over ≥3 runs — a run that reads half is LAG hash luck, not a fault.
+
+**Expected artefacts:** all three scripts write into `results/perftest/`
+(`summary_<ts>.txt`, `summary_agg_<ts>.txt`, and the raw logs).
 
 ---
 
-## Packaging and submission
+## Step 8 — Package and submit
 
 ```bash
-bash tools/collect_results.sh --vendor <name> --gpu <model> --dir results
-python3 tools/summarize.py results --vendor <name> --gpu <model>
+bash tools/collect_results.sh --dir results --vendor <vendor name> --gpu <GPU>
+python3 tools/summarize.py results --vendor <vendor name> --gpu <GPU>
 ```
 
-`collect_results.sh` refuses to package if a gate produced nothing (override with
-`--allow-partial` only if you intend to submit an incomplete package). It writes:
+`collect_results.sh` checks all four gate directories. **If any is empty it
+refuses to package and names the gate** — that gate has not been accepted. It
+then writes `results/environment.txt`, `results/MANIFEST.txt` and the tarball.
+
+`summarize.py` writes `results/SUMMARY.md` and `results/results.json`, with a
+verdict per gate and an overall verdict.
+
+**Expected final state:**
 
 ```
 results/
-  environment.txt    hardware/software snapshot of the collecting host
-  MANIFEST.txt       what is present and what is missing
-  SUMMARY.md         the written verdict (from summarize.py)
-  results.json       the same, machine-readable
-  <tarball>          everything above plus the raw logs
+  SUMMARY.md          generated
+  results.json        generated
+  MANIFEST.txt        generated
+  environment.txt     generated
+  preflight/          runtime.csv, spec.csv
+  cublas/             percard_cluster/<node>/dev<N>.log, fleet_percard.csv
+  nccl/               nccltest_<op>.log, 1node_nccltest_<op>.log
+  perftest/           summary_<ts>.txt, summary_agg_<ts>.txt, perftest_<ts>.log
 ```
 
-`summarize.py` re-runs the **same parsers** the gates use, so the summary can
-never disagree with the raw data. Its overall verdict is `PASS`, `FAIL`,
-`PASS (see review notes)`, or `INCOMPLETE` when any gate is missing.
-
-Then complete the acceptance tables in **[SUBMISSION.md](SUBMISSION.md)** and send
-the tarball.
+Send the tarball plus the completed tables in **[SUBMISSION.md](SUBMISSION.md)**.
 
 ---
 
-## How results are judged
+## Choosing an image
 
-The single principle behind every gate: **compare like with like.**
+You need a CUDA container image. Either build one from `nccl_bench/Dockerfile`
+(it adds nccl-tests and sshd), or use an NVIDIA PyTorch image of the right
+generation:
 
-| Do | Don't |
+| GPU generation | Image generation |
 | --- | --- |
-| Compare a fleet against its own median to find weak cards | Compare one card's single precision against a headline number |
-| Compare multi-node All2All against a multi-node baseline | Compare it against the single-node number |
-| Compare nodes on the same rail/leaf | Mix rails and assume the spread is noise |
-| Report coverage (M of N nodes) and name excluded nodes | Silently drop an unreachable node |
-| Treat "no output" as "not tested" | Treat it as a pass |
+| B200 / B300 / GB200 / GB300 | CUDA 13 era (`nvcr.io/nvidia/pytorch:26.05-py3` or similar) |
+| H100 / H200 / H800 / H20 / A800 / L20 | CUDA 12 era (`nvcr.io/nvidia/pytorch:25.05-py3` or similar) |
 
-If a measurement is inconclusive, say so and say why. An honest gap is
-recoverable; a wrong number that gets built on is not.
+For gate 2 the image must already contain nccl-tests built with the `_mpi`
+binaries (the `Dockerfile` here does that). The `cublasMatmulBench_<GPU>`
+binaries for gate 1 ship **in this repo** and are never in the image.
+
+---
+
+## Things that will bite you
+
+| Symptom | Cause |
+| --- | --- |
+| Gate 2: every rank prints `LOCALIP=NONE` | `NCCL_SOCKET_IFNAME` wrong, or not the same name on all nodes |
+| Gate 2: `ibv_modify_qp INIT->RTR ETIMEDOUT` | Wrong `NCCL_IB_GID_INDEX`, or the RoCE QoS settings (MTU / PFC / trust) differ between nodes |
+| Gate 2: AllGather/ReduceScatter crash with `all_gather.cu:50` on some pairs only | `NCCL_CUMEM_HOST_ENABLE=1` colliding with NVLS. The script defaults it to 0 — do not override |
+| Gate 1: `no_bench_script` | `-s` points at the wrong path on the nodes — see Step 3 |
+| Gate 3: every rail skipped as "no rail IP" | Should not happen; report it with `ibdev2netdev` output |
+| Gate 3: `ibv_reg_mr` failed | `memlock` is not unlimited on that node |
+| `collect_results.sh` says a gate is missing | That gate produced no files where expected — re-read its step above |
+
+---
+
+## What was verified where
+
+Steps 0–8 were executed **as written in this document** against a two-node H20
+cluster (8× H20 each, RoCE, GID index 3) on 2026-09-20. All four gates produced
+their artefacts in `results/<gate>/` with no manual moving of files, and
+`collect_results.sh` + `summarize.py` ran end to end.
+
+Not exercised on that cluster, and worth a first-run check on yours:
+
+- `tools/setup_ssh_keyless.sh` — passwordless ssh already existed there.
+- `nccl_bench/close_acs.sh` — it changes PCIe configuration and needs a reboot,
+  so it was deliberately not run.
+- Gate 2 beyond two nodes, and gate 1 on a large fleet.
+- Gate 1's fleet sweep was smoke-tested with one card per node rather than all
+  eight; the mechanism is the same.

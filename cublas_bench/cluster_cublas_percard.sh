@@ -27,15 +27,20 @@
 #   -s <share_dir>       Path to the cublas_bench dir on remote nodes
 #                        (default: current directory; must be accessible on each node)
 #   -n <gpus_per_node>   GPUs per node (default: 8)
+#   -o <output_dir>      Where to write per-card logs on this machine
+#                        (default: <repo>/results/cublas)
 #   --preflight          Only do connectivity + image precheck, then exit
 #   -y, --yes            Non-interactive (skip confirmation prompt)
 #   -h, --help           Show this help
 #
 # Environment variables (override flags):
-#   HOSTS, PORT, SSH_USER, GPU_TYPE, IMAGE, SHARE_DIR, GPUS_PER_NODE
+#   HOSTS, PORT, SSH_USER, GPU_TYPE, IMAGE, SHARE_DIR, GPUS_PER_NODE, OUT_DIR
 # ============================================================================
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Remember where the caller was: this script cds into its own directory, which
+# would otherwise break caller-relative arguments like `-H ../preflight/hosts.txt`.
+ORIG_PWD="$PWD"
 cd "$SCRIPT_DIR"
 
 # ---------- defaults ----------
@@ -46,6 +51,10 @@ SHARE_DIR="${SHARE_DIR:-$SCRIPT_DIR}"
 GPUS_PER_NODE="${GPUS_PER_NODE:-8}"
 IMAGE="${IMAGE:-}"
 HOSTS="${HOSTS:-}"
+# Where the per-card logs land on THIS machine. Defaults into the repository's
+# results/ tree so tools/collect_results.sh and tools/summarize.py find it
+# without any manual moving of files.
+OUT_DIR="${OUT_DIR:-$SCRIPT_DIR/../results/cublas}"
 FORCE=0
 PREFLIGHT_ONLY=0
 
@@ -67,6 +76,7 @@ while [[ $# -gt 0 ]]; do
         -g) GPU_TYPE="$2"; shift 2 ;;
         -i) IMAGE="$2"; shift 2 ;;
         -s) SHARE_DIR="$2"; shift 2 ;;
+        -o) OUT_DIR="$2"; shift 2 ;;
         -n) GPUS_PER_NODE="$2"; shift 2 ;;
         -y|--yes) FORCE=1; shift ;;
         --preflight|--preflight-only) PREFLIGHT_ONLY=1; shift ;;
@@ -74,6 +84,19 @@ while [[ $# -gt 0 ]]; do
         *) echo "[ERROR] unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+# ---------- resolve caller-relative paths ----------
+# Resolve BEFORE the cd above could matter: -H and -o are local paths given
+# relative to wherever the caller stands. SHARE_DIR is deliberately NOT resolved
+# — it is a path on the REMOTE nodes, not here.
+case "$HOSTS" in
+    /*) ;;
+    *) HOSTS="$ORIG_PWD/$HOSTS" ;;
+esac
+case "$OUT_DIR" in
+    /*) ;;
+    *) OUT_DIR="$ORIG_PWD/$OUT_DIR" ;;
+esac
 
 # ---------- validate required args ----------
 if [[ -z "$HOSTS" ]]; then
@@ -138,7 +161,7 @@ phase "Plan"
 log "HOSTS=$HOSTS  nodes=$NHOSTS  PORT=$PORT  USER=$SSH_USER  GPU_TYPE=$GPU_TYPE  gpus/node=$GPUS_PER_NODE"
 log "IMAGE=$IMAGE"
 log "SHARE_DIR=$SHARE_DIR (cublas binaries on each node)"
-log "Output: $SCRIPT_DIR/percard_cluster/<node>/dev{0..$((GPUS_PER_NODE-1))}.log"
+log "Output: $OUT_DIR/percard_cluster/<node>/dev{0..$((GPUS_PER_NODE-1))}.log"
 log "Transport: plain ssh (parallel). Remote runner piped via stdin — no shared FS needed for the script."
 
 # ---------------- preflight: connectivity + image ----------------
@@ -170,7 +193,7 @@ fi
 
 # ---------------- parallel per-card run ----------------
 phase "Parallel per-card (each node: $GPUS_PER_NODE cards, serial within node; nodes parallel)"
-rm -rf "$SCRIPT_DIR/percard_cluster"; mkdir -p "$SCRIPT_DIR/percard_cluster"
+rm -rf "$OUT_DIR/percard_cluster"; mkdir -p "$OUT_DIR/percard_cluster"
 
 ENV_PREFIX="SHARE_DIR='$SHARE_DIR' IMAGE='$IMAGE' GPU_TYPE='$GPU_TYPE' GPUS_PER_NODE='$GPUS_PER_NODE'"
 OUT=$(_ssh_parallel_pipe "$SCRIPT_DIR/_percard_remote.sh" "$ENV_PREFIX" 2>&1)
@@ -188,13 +211,13 @@ NEED_PULL=0
 while read -r h _; do
     case "$h" in ''|\#*) continue;; esac
     # Check if results are already local (shared FS case)
-    if [ -d "$SCRIPT_DIR/percard_cluster/$h" ]; then
+    if [ -d "$OUT_DIR/percard_cluster/$h" ]; then
         continue
     fi
     # Need to pull from this node
     rsync -az -e "ssh $SSH_OPTS -p $PORT" \
         "${SSH_USER}@${h}:$SHARE_DIR/percard_cluster/" \
-        "$SCRIPT_DIR/percard_cluster/" 2>/dev/null
+        "$OUT_DIR/percard_cluster/" 2>/dev/null
     if [ $? -ne 0 ]; then
         log "Warning: rsync failed for $h (results may be incomplete)"
     fi
@@ -202,9 +225,9 @@ while read -r h _; do
 done < <(grep -vE '^[[:space:]]*(#|$)' "$HOSTS")
 
 if [ "$NEED_PULL" = "1" ]; then
-    log "Results pulled from remote nodes to $SCRIPT_DIR/percard_cluster/"
+    log "Results pulled from remote nodes to $OUT_DIR/percard_cluster/"
 fi
 
 # ---------------- aggregate + outlier detection ----------------
 phase "Aggregate + fleet-wide outlier detection"
-python3 parse_cluster_percard.py "$SCRIPT_DIR/percard_cluster" "$GPU_TYPE"
+python3 parse_cluster_percard.py "$OUT_DIR/percard_cluster" "$GPU_TYPE"

@@ -117,8 +117,27 @@ bash cluster_cublas_percard.sh -H hosts.txt -i nvcr.io/nvidia/pytorch:25.05-py3 
 | `-g <gpu>`     | H800        | GPU type                                               |
 | `-s <dir>`     | $PWD        | Path to cublas_bench on remote nodes                   |
 | `-n <n>`       | 8           | GPUs per node (auto-detect if _percard_remote runs without it) |
+| `-o <dir>`     | `<repo>/results/cublas` | Where the per-card logs land on **this** machine |
 | `--preflight`  |             | Only do connectivity + image precheck                  |
 | `-y`           |             | Non-interactive                                        |
+
+> `-H` and `-o` are resolved relative to **where you invoke the script**, not to
+> `cublas_bench/`, so `-H preflight/hosts.txt` from the repo root works.
+> `-s` is deliberately *not* resolved locally — it is a path on the **nodes**.
+
+### Output
+
+Per-card logs land in `results/cublas/percard_cluster/<node>/dev<N>.log`, one
+file per GPU, plus `fleet_percard.csv`. That is the directory
+`tools/collect_results.sh` packages, so no manual moving of files is needed.
+
+```bash
+bash cluster_cublas_percard.sh -H ../preflight/hosts.txt -P 22 -u root \
+     -i <image> -g H800 -s /data/ai_infra_perf_prepare/cublas_bench
+```
+
+Runtime is roughly 5 minutes per card, so ~40 minutes for an 8-GPU node.
+`--preflight` checks connectivity and the image without running anything.
 
 ### Transport
 

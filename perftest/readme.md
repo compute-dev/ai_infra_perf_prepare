@@ -110,6 +110,26 @@ mislead you; it is the RoCE path that is blocked.
 > "cross-rail works". The script also verifies the peer server actually started,
 > because a mistyped device name otherwise looks exactly like "rail isolated".
 
+## Output
+
+All three scripts write into `results/perftest/` by default, which is the
+directory `tools/collect_results.sh` packages:
+
+| File | From |
+| --- | --- |
+| `perftest_<ts>.log` | `perftest_pair.sh` — raw output plus the `hw_counters snapshot` blocks |
+| `summary_<ts>.txt` | `perftest_pair.sh` — the per-rail table, one block per direction |
+| `perftest_agg_<ts>.log` | `perftest_agg.sh` — raw output of every run |
+| `summary_agg_<ts>.txt` | `perftest_agg.sh` — per-rail peak/avg over the runs |
+
+Override with `--results DIR`. `rail_isolation_check.sh` prints to stdout only —
+save it yourself if you want it in the bundle:
+
+```bash
+bash rail_isolation_check.sh node01 node02 --ssh-port 22 \
+  | tee results/perftest/rail_isolation.txt
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

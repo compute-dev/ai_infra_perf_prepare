@@ -99,8 +99,34 @@ if [ "${#A_DEVS[@]}" -eq 0 ] || [ "${#B_DEVS[@]}" -eq 0 ]; then
     echo "[ERROR] no ACTIVE RDMA device on ${A} (${#A_DEVS[@]}) or ${B} (${#B_DEVS[@]})" >&2
     exit 1
 fi
-[ -z "${DEVA}" ] && DEVA="${A_DEVS[0]}"
-[ -z "${DEVB}" ] && DEVB="${B_DEVS[0]}"
+
+# Default to a GPU-affine COMPUTE rail, not "the first ACTIVE device".
+# The ACTIVE list commonly leads with a management/storage NIC; testing that one
+# produces a bogus RAIL ISOLATED verdict, because the same-rail leg succeeds over
+# the management network while the cross-rail leg swaps the peer to a compute
+# device that the management-side client can never reach.
+if [ -z "${DEVA}" ]; then
+    _topo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/nccl_bench/gpu_nic_topo.sh"
+    if [ -f "${_topo}" ]; then
+        # Run it ON node A: this script runs on the control machine, which has
+        # no GPUs, but gpu_nic_topo.sh needs nvidia-smi and the local RDMA stack.
+        DEVA="$(_ssh_script "${A}" "${_topo}" --nccl-hca 2>/dev/null | tail -1 | cut -d, -f1)"
+        [ -n "${DEVA}" ] && echo "[INFO] device auto-selected from GPU-NIC affinity: ${DEVA}"
+    fi
+    [ -n "${DEVA}" ] || DEVA="${A_DEVS[0]}"
+fi
+
+# The peer has to use the matching rail; if it does not expose that device,
+# fall back and say so rather than silently comparing different rails.
+if [ -z "${DEVB}" ]; then
+    if printf '%s\n' "${B_DEVS[@]}" | grep -qx "${DEVA}"; then
+        DEVB="${DEVA}"
+    else
+        DEVB="${B_DEVS[0]}"
+        echo "[WARN] ${B} has no ${DEVA}; using ${DEVB} instead. If the two nodes" >&2
+        echo "       name their rails differently, pass devA and devB explicitly." >&2
+    fi
+fi
 
 # GID: only meaningful on RoCE
 if [ -z "${GID}" ]; then

@@ -103,7 +103,12 @@ else
     fi
 
     # Link layer decides whether a GID index is meaningful at all
-    FIRST_HCA="${HCCA[0]:-${ALL_HCAS[0]}}"
+    # Probe a device that actually carries NCCL traffic, not just the first
+    # ACTIVE one: the ACTIVE list can include a storage/management NIC whose GID
+    # table need not match the compute rails'. Prefer a device from the HCA set
+    # we just derived.
+    FIRST_HCA="$(echo "${NCCL_IB_HCA}" | cut -d, -f1)"
+    [ -n "${FIRST_HCA}" ] || FIRST_HCA="${HCCA[0]:-${ALL_HCAS[0]}}"
     LINK_LAYER="$(cat "/sys/class/infiniband/${FIRST_HCA}/ports/1/link_layer" 2>/dev/null || echo unknown)"
     note "fabric        : ${LINK_LAYER}"
 

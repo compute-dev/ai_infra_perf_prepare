@@ -42,11 +42,15 @@ fi
 
 A="$1"; B="$2"; shift 2
 
-# Optional positionals: devA devB gid
+# Optional positionals: devA devB gid.
+# Only consume an argument that is NOT an option, otherwise `--ssh-port 56000`
+# would be swallowed here as the gid and the flag would never be parsed.
+_pick_positional() { [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; }
+
 DEVA=""; DEVB=""; GID=""
-if [ $# -ge 1 ]; then DEVA="$1"; shift; fi
-if [ $# -ge 1 ]; then DEVB="$1"; shift; fi
-if [ $# -ge 1 ]; then GID="$1";  shift; fi
+if _pick_positional "$@"; then DEVA="$1"; shift; fi
+if _pick_positional "$@"; then DEVB="$1"; shift; fi
+if _pick_positional "$@"; then GID="$1";  shift; fi
 
 CROSS_DEV=""
 SSH_PORT="${SSH_PORT:-22}"
@@ -64,6 +68,14 @@ done
 SSHX="-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 -p ${SSH_PORT}"
 _ssh(){ ssh ${SSHX} "${SSH_USER}@$1" "$2" 2>&1; }
 
+# _ssh_script <node> <local_script> [args...] — run a LOCAL script on a remote
+# node via stdin. The redirection must be local: inside the remote command
+# string the remote shell would look for a path that only exists here.
+_ssh_script() {
+    local node="$1" script="$2"; shift 2
+    ssh ${SSHX} "${SSH_USER}@${node}" "bash -s -- $*" < "${script}" 2>&1
+}
+
 # ---- helpers on a node -----------------------------------------------------
 _active_devices() {
     _ssh "$1" "for d in /sys/class/infiniband/*; do \
@@ -72,7 +84,11 @@ _active_devices() {
                done | sort -V"
 }
 _dev_ip() {   # IP on that device's netdev — the TCP control channel address
-    _ssh "$1" "nd=\$(ls /sys/class/infiniband/$2/device/net 2>/dev/null | head -1); \
+    # Resolve via ibdev2netdev / ndevs, not device/net: on a bonded RoCE setup
+    # device/net is the physical PF (no routable IP), not the bond.
+    _ssh "$1" "nd=\$(ibdev2netdev 2>/dev/null | awk '\$1==\"$2\"{print \$5; exit}'); \
+               [ -n \"\$nd\" ] || nd=\$(cat /sys/class/infiniband/$2/ports/1/gid_attrs/ndevs/${GID:-0} 2>/dev/null); \
+               [ -n \"\$nd\" ] || nd=\$(ls /sys/class/infiniband/$2/device/net 2>/dev/null | head -1); \
                [ -n \"\$nd\" ] && ip -4 -o addr show \$nd 2>/dev/null | awk '{print \$4}' | cut -d/ -f1 | head -1"
 }
 
@@ -91,7 +107,7 @@ if [ -z "${GID}" ]; then
     LINK_LAYER="$(_ssh "$A" "cat /sys/class/infiniband/${DEVA}/ports/1/link_layer 2>/dev/null")"
     if [ "${LINK_LAYER}" = "Ethernet" ]; then
         GID_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/detect_roce_gid.sh"
-        GID="$(_ssh "$A" "bash -s -- ${DEVA} < ${GID_HELPER}" | tail -1)"
+        GID="$(_ssh_script "$A" "${GID_HELPER}" "${DEVA}" | tail -1)"
         [[ "${GID}" =~ ^[0-9]+$ ]] || { echo "[ERROR] could not detect the RoCE GID index; pass it as the 5th argument" >&2; exit 1; }
     else
         GID="0"

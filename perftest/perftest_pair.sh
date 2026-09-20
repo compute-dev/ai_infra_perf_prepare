@@ -89,14 +89,34 @@ SSHX="-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 -p ${SSH
 # _ssh <node> <command>
 _ssh() { ssh ${SSHX} "${SSH_USER}@$1" "$2" 2>&1; }
 
+# _ssh_script <node> <local_script> [args...]
+# Run a LOCAL script on a remote node, feeding it over stdin.
+#
+# The redirection must happen HERE. Writing `bash -s -- x < /local/path` as the
+# remote command string makes the *remote* shell try to open a path that only
+# exists on this machine — it fails with "No such file or directory".
+_ssh_script() {
+    local node="$1" script="$2"; shift 2
+    ssh ${SSHX} "${SSH_USER}@${node}" "bash -s -- $*" < "${script}" 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # discover the device list and each device's rail IP on a node
 #
 # The RDMA path is pinned by each end's -d device; the IP is only the TCP
 # control channel. So for a given rail we need the SERVER's IP on that rail.
 # ---------------------------------------------------------------------------
-_dev_ip() {   # _dev_ip <node> <dev>  -> IPv4 of that device's netdev
-    _ssh "$1" "nd=\$(ls /sys/class/infiniband/$2/device/net 2>/dev/null | head -1); \
+_dev_ip() {   # _dev_ip <node> <dev>  -> IPv4 of the netdev carrying this rail
+    # Prefer ibdev2netdev / the sysfs ndevs map over
+    # /sys/class/infiniband/<dev>/device/net.
+    #
+    # On a bonded RoCE setup those disagree: device/net resolves to the physical
+    # PF netdev (e.g. eth2) which carries no routable address, while the
+    # RoCE-relevant netdev is the bond (e.g. bond2) that ibdev2netdev and
+    # gid_attrs/ndevs report. Using device/net yields an empty IP for every rail.
+    _ssh "$1" "nd=\$(ibdev2netdev 2>/dev/null | awk '\$1==\"$2\"{print \$5; exit}'); \
+               [ -n \"\$nd\" ] || nd=\$(cat /sys/class/infiniband/$2/ports/1/gid_attrs/ndevs/${GID:-0} 2>/dev/null); \
+               [ -n \"\$nd\" ] || nd=\$(ls /sys/class/infiniband/$2/device/net 2>/dev/null | head -1); \
                [ -n \"\$nd\" ] && ip -4 -o addr show \$nd 2>/dev/null | awk '{print \$4}' | cut -d/ -f1 | head -1"
 }
 
@@ -139,7 +159,7 @@ if [ -z "${GID}" ]; then
         # RoCE: the GID index matters and must be right, or every QP fails
         GID_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/detect_roce_gid.sh"
         GID_FIRST="$(echo "${DEVLIST}" | awk '{print $1}')"
-        GID="$(_ssh "${NODE_A}" "bash -s -- ${GID_FIRST} < ${GID_HELPER}" | tail -1)"
+        GID="$(_ssh_script "${NODE_A}" "${GID_HELPER}" "${GID_FIRST}" | tail -1)"
         if ! [[ "${GID}" =~ ^[0-9]+$ ]]; then
             echo "[ERROR] could not auto-detect the RoCE GID index (got: '${GID}')." >&2
             echo "        Run tools/detect_roce_gid.sh <dev> --table on a node, then pass --gid N." >&2

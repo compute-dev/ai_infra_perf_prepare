@@ -89,7 +89,15 @@ case "${2:-}" in
         exit 0
         ;;
     -h|--help)
-        sed -n '2,20p' "$0"
+        # This script is often piped to a remote `bash -s`, where $0 is just
+        # "bash" and cannot be re-read. Fall back to inline usage text.
+        if [ -r "$0" ] && [ "$0" != "bash" ]; then
+            sed -n '2,20p' "$0"
+        else
+            echo "usage: detect_roce_gid.sh <dev>          # print the RoCE v2 + IPv4 GID index"
+            echo "       detect_roce_gid.sh <dev> --table  # dump the whole GID table"
+            echo "       detect_roce_gid.sh --first        # use the first ACTIVE device"
+        fi
         exit 0
         ;;
 esac

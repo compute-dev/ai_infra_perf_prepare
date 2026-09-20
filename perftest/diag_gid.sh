@@ -53,6 +53,14 @@ done
 SSHX="-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 -p ${SSH_PORT}"
 _ssh(){ ssh ${SSHX} "${SSH_USER}@$1" "$2" 2>&1; }
 
+# _ssh_script <node> <local_script> [args...] — run a LOCAL script on a remote
+# node via stdin. The redirection must be local: inside the remote command
+# string the remote shell would look for a path that only exists here.
+_ssh_script() {
+    local node="$1" script="$2"; shift 2
+    ssh ${SSHX} "${SSH_USER}@${node}" "bash -s -- $*" < "${script}" 2>&1
+}
+
 GID_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/detect_roce_gid.sh"
 if [ ! -f "${GID_HELPER}" ]; then
     echo "[ERROR] ${GID_HELPER} not found (needed to run on the remote nodes)" >&2
@@ -87,13 +95,13 @@ fi
 for node in "${A}" "${B}"; do
     echo
     echo "--- ${node}:${DEV} GID table ---"
-    _ssh "${node}" "bash -s -- ${DEV} --table < ${GID_HELPER}" | sed 's/^/  /'
+    _ssh_script "${node}" "${GID_HELPER}" "${DEV}" --table | sed 's/^/  /'
 done
 
 # ---- detect the index on each node ----------------------------------------
 echo
-IDX_A="$(_ssh "${A}" "bash -s -- ${DEV} < ${GID_HELPER}" | tail -1)"
-IDX_B="$(_ssh "${B}" "bash -s -- ${DEV} < ${GID_HELPER}" | tail -1)"
+IDX_A="$(_ssh_script "${A}" "${GID_HELPER}" "${DEV}" | tail -1)"
+IDX_B="$(_ssh_script "${B}" "${GID_HELPER}" "${DEV}" | tail -1)"
 
 echo "detected RoCE v2 + IPv4 GID index:"
 echo "  ${A}: ${IDX_A:-<none>}"
@@ -124,7 +132,11 @@ if [ "${NO_TEST}" -eq 1 ]; then
 fi
 
 # ---- confirm with a bandwidth test ----------------------------------------
-PEER_IP="$(_ssh "${B}" "nd=\$(ls /sys/class/infiniband/${DEV}/device/net 2>/dev/null | head -1); \
+# Resolve the peer netdev via ibdev2netdev / ndevs, not device/net: on a bonded
+# RoCE setup device/net is the physical PF (no routable IP), not the bond.
+PEER_IP="$(_ssh "${B}" "nd=\$(ibdev2netdev 2>/dev/null | awk '\$1==\"${DEV}\"{print \$5; exit}'); \
+                        [ -n \"\$nd\" ] || nd=\$(cat /sys/class/infiniband/${DEV}/ports/1/gid_attrs/ndevs/${IDX_B:-0} 2>/dev/null); \
+                        [ -n \"\$nd\" ] || nd=\$(ls /sys/class/infiniband/${DEV}/device/net 2>/dev/null | head -1); \
                         [ -n \"\$nd\" ] && ip -4 -o addr show \$nd 2>/dev/null | awk '{print \$4}' | cut -d/ -f1 | head -1")"
 if [ -z "${PEER_IP}" ]; then
     echo "[ERROR] no IPv4 on ${B}:${DEV}; skipping the confirmation test" >&2

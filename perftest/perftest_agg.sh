@@ -80,6 +80,14 @@ SUM="${RESULTS}/summary_agg_${TS}.txt"
 SSHX="-o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=15 -p ${SSH_PORT}"
 _ssh() { ssh ${SSHX} "${SSH_USER}@$1" "$2" 2>&1; }
 
+# _ssh_script <node> <local_script> [args...] — run a LOCAL script on a remote
+# node via stdin. The redirection must be local; inside the remote command
+# string the remote shell would look for a path that only exists here.
+_ssh_script() {
+    local node="$1" script="$2"; shift 2
+    ssh ${SSHX} "${SSH_USER}@${node}" "bash -s -- $*" < "${script}" 2>&1
+}
+
 echo "== perftest aggregate (multi-QP)  $(date) ==" | tee "${LOG}"
 echo "[INFO] nodes: A=${NODE_A} B=${NODE_B}  size=${SZ}B qps=${QPS} runs=${RUNS} ssh_port=${SSH_PORT}" | tee -a "${LOG}"
 
@@ -103,7 +111,7 @@ if [ -z "${GID}" ]; then
     LINK_LAYER="$(_ssh "${NODE_A}" "cat /sys/class/infiniband/${GID_FIRST}/ports/1/link_layer 2>/dev/null")"
     if [ "${LINK_LAYER}" = "Ethernet" ]; then
         GID_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/detect_roce_gid.sh"
-        GID="$(_ssh "${NODE_A}" "bash -s -- ${GID_FIRST} < ${GID_HELPER}" | tail -1)"
+        GID="$(_ssh_script "${NODE_A}" "${GID_HELPER}" "${GID_FIRST}" | tail -1)"
         if ! [[ "${GID}" =~ ^[0-9]+$ ]]; then
             echo "[ERROR] could not auto-detect the RoCE GID index (got '${GID}'); pass --gid N" >&2
             exit 1
@@ -115,10 +123,14 @@ if [ -z "${GID}" ]; then
     fi
 fi
 
-# The server's rail IP is what the client connects to for the control channel
+# The server's rail IP is what the client connects to for the control channel.
+# Resolve the netdev via ibdev2netdev / ndevs, NOT device/net: on a bonded RoCE
+# setup device/net gives the physical PF (no routable IP) instead of the bond.
 declare -A SIP
 for d in ${DEVLIST}; do
-    SIP["${d}"]="$(_ssh "${NODE_B}" "nd=\$(ls /sys/class/infiniband/${d}/device/net 2>/dev/null | head -1); \
+    SIP["${d}"]="$(_ssh "${NODE_B}" "nd=\$(ibdev2netdev 2>/dev/null | awk '\$1==\"${d}\"{print \$5; exit}'); \
+                                     [ -n \"\$nd\" ] || nd=\$(cat /sys/class/infiniband/${d}/ports/1/gid_attrs/ndevs/${GID:-0} 2>/dev/null); \
+                                     [ -n \"\$nd\" ] || nd=\$(ls /sys/class/infiniband/${d}/device/net 2>/dev/null | head -1); \
                                      [ -n \"\$nd\" ] && ip -4 -o addr show \$nd 2>/dev/null | awk '{print \$4}' | cut -d/ -f1 | head -1")"
 done
 

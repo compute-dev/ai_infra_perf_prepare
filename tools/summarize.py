@@ -86,7 +86,7 @@ def human(n):
 def summarize_preflight(res_dir):
     """Compare the two preflight CSVs. Reports fields that disagree across nodes."""
     out = {"present": False, "files": [], "critical_diff": [], "advisory_diff": [],
-           "nodes": 0, "reachable": 0}
+           "nodes": 0, "reachable": 0, "fleet": {}}
 
     csvs = sorted(glob.glob(os.path.join(res_dir, "preflight", "*.csv")))
     if not csvs:
@@ -119,6 +119,15 @@ def summarize_preflight(res_dir):
         out["nodes"] = max(out["nodes"], len(rows))
         reach = sum(1 for r in rows if str(r.get("reachable", "")).strip() in ("1", "true", "True"))
         out["reachable"] = max(out["reachable"], reach)
+
+        # Keep the fleet's own values for the header. The environment snapshot
+        # is taken on the *control* machine, which usually has no GPU, so the
+        # node facts have to come from here.
+        for k in ("gpu_count", "driver", "cuda_api", "os", "kernel",
+                  "fabric_type", "compute_active", "roce_gid_v2idx", "gpu_nic_rail"):
+            v = str(rows[0].get(k, "")).strip()
+            if v and v != "N/A":
+                out["fleet"].setdefault(k, v)
 
         cols = [c for c in rows[0].keys() if c not in ("host", "reachable")]
         for col in cols:
@@ -181,17 +190,23 @@ def summarize_cublas(res_dir, gpu):
 
 
 def load_nccl_baselines():
-    """Parse the markdown baseline tables into {(gpu, gpus_per_node, nodes): {...}}.
+    """Parse the markdown baseline tables into {(gpu, gpus_per_node, nodes): [row, ...]}.
 
     baselines.md is the single human-readable source, so the summary reads it
-    rather than keeping a second copy of the numbers."""
+    rather than keeping a second copy of the numbers.
+
+    A key can legitimately have MORE THAN ONE row: the same GPU at the same
+    scale has been measured on different clusters with different results (H20
+    *8*2 differs a lot between two sites). Collapsing those into a dict would
+    silently keep whichever came last, so every row is retained and the caller
+    is told the scale is ambiguous.
+    """
     path = os.path.join(NCCL_DIR, "baselines.md")
     text = read(path)
     table = {}
     if not text:
         return table
 
-    scale_re = re.compile(r"^(\d+)$")
     for line in text.splitlines():
         if not line.strip().startswith("|"):
             continue
@@ -221,18 +236,40 @@ def load_nccl_baselines():
         if len(nums) != 4:
             continue
 
-        table[(gpu_model.upper(), gpn, nodes)] = {
+        table.setdefault((gpu_model.upper(), gpn, nodes), []).append({
+            "source": key_col,
             "allreduce": nums[0], "all2all": nums[1],
             "allgather": nums[2], "reducescatter": nums[3],
-        }
+        })
+
+    # baselines.md repeats rows across two tables (a single-node quick-lookup
+    # table and the full one). Collapse rows that carry identical measurements
+    # so the "N reference rows" count reflects distinct measurements, not
+    # duplicate listings.
+    for key, rows in table.items():
+        seen = set()
+        uniq = []
+        for r in rows:
+            sig = (r["allreduce"], r["all2all"], r["allgather"], r["reducescatter"])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            uniq.append(r)
+        table[key] = uniq
+
     return table
 
 
 def nccl_scale_from_log(text):
-    """Recover (nodes, gpus_per_node) from the log header.
+    """Recover (nodes, gpus_per_node) from the log.
 
-    run_nccltest.sh prints either '[INFO] HOST_LIST: ip:8,ip:8' or an
-    '[CMD] mpirun -np N -H ip:8,ip:8' line."""
+    Multi-node runs print either '[INFO] HOST_LIST: ip:8,ip:8' or an
+    '[CMD] mpirun -np N -H ip:8,ip:8' line.
+
+    Single-node runs (1node_nccltest.sh) have neither — they drive all local
+    GPUs from one process with no MPI. Fall back to the nccl-tests banner
+    ('# nThread 1 nGpus 8 ...') and treat it as a one-node run, otherwise the
+    single-node result silently gets no baseline to compare against."""
     m = re.search(r"HOST_LIST:\s*(\S.*)$", text, re.MULTILINE)
     hostlist = None
     if m:
@@ -241,18 +278,22 @@ def nccl_scale_from_log(text):
         m = re.search(r"mpirun\s+-np\s+\d+\s+-H\s+(\S+)", text)
         if m:
             hostlist = m.group(1)
-    if not hostlist:
-        return None
-    entries = [e for e in hostlist.split(",") if e.strip()]
-    if not entries:
-        return None
-    gpn = None
-    m = re.search(r":(\d+)$", entries[0].strip())
-    if m:
-        gpn = int(m.group(1))
-    if gpn is None:
+
+    if hostlist:
+        entries = [e for e in hostlist.split(",") if e.strip()]
+        if not entries:
+            return None
         gpn = 1
-    return len(entries), gpn
+        m = re.search(r":(\d+)$", entries[0].strip())
+        if m:
+            gpn = int(m.group(1))
+        return len(entries), gpn
+
+    # No MPI: single-node run. nGpus is the number of local GPUs.
+    m = re.search(r"nGpus\s+(\d+)", text)
+    if m:
+        return 1, int(m.group(1))
+    return None
 
 
 def summarize_nccl(res_dir, gpu, baselines):
@@ -272,16 +313,23 @@ def summarize_nccl(res_dir, gpu, baselines):
         scale = nccl_scale_from_log(text)
 
         base = None
+        n_variants = 0
         if scale:
             nodes, gpn = scale
-            for (bg, bgpn, bn), vals in baselines.items():
-                if bg == gpu_up and bgpn == gpn and bn == nodes:
-                    base = vals
-                    out["baseline_used"] = f"{bg}*{bgpn}*{bn}"
-                    break
+            variants = baselines.get((gpu_up, gpn, nodes), [])
+            if variants:
+                # Several reference rows can exist for one scale (measured on
+                # different clusters). Compare against the BEST of them: that is
+                # the strictest defensible reference, since it is what this
+                # hardware/scale has actually been shown to do.
+                base = {op: max(v[op] for v in variants)
+                        for op in ("allreduce", "all2all", "allgather", "reducescatter")}
+                n_variants = len(variants)
+                out["baseline_used"] = f"{gpu_up}*{gpn}*{nodes}"
 
         entry = {"file": os.path.basename(path), "scale": None, "rows": [],
-                 "out_of_bounds": parsed.get("out_of_bounds")}
+                 "out_of_bounds": parsed.get("out_of_bounds"),
+                 "baseline_variants": n_variants}
         if scale:
             entry["scale"] = f"{gpu_up}*{scale[1]}*{scale[0]}"
 
@@ -329,12 +377,21 @@ def summarize_perftest(res_dir):
 
     for path in sorted(glob.glob(os.path.join(pdir, "summary_*.txt"))):
         out["present"] = True
+        # The summary is a sequence of per-direction blocks, each opened by
+        # "== direction: forward: server=..." — without tracking it, the same
+        # rail appears twice in the table with no way to tell the rows apart.
+        direction = "?"
         for line in read(path).splitlines():
+            m = re.match(r"^==\s*direction:\s*([^:(]+)", line)
+            if m:
+                direction = m.group(1).strip()
+                continue
             f = line.split()
             if len(f) >= 7 and not f[0].startswith("-") and \
                re.match(r"^[A-Za-z]", f[0]) and f[0] not in ("rail(dev)", "TOTAL"):
                 try:
                     out["pair"].append({
+                        "direction": direction,
                         "rail": f[0], "gbs": float(f[1]), "wr_bw": f[2],
                         "wr_bidi": f[3], "rd_bw": f[4],
                         "wr_lat_us": f[5], "send_lat_us": f[6],
@@ -476,9 +533,20 @@ def main():
 
     env = os.path.join(res, "environment.txt")
     if os.path.isfile(env):
-        md.append("## Environment\n")
+        md.append("## Collecting host\n")
+        md.append("_Snapshot of the machine that ran the gate scripts — not of the "
+                  "GPU nodes. The node facts are in the gate-0 CSVs below._\n")
         md.append("```")
         md.append(read(env).strip())
+        md.append("```\n")
+
+    if pre.get("fleet"):
+        md.append("## Fleet\n")
+        md.append("_As reported by the node-consistency collector; identical across "
+                  "all reachable nodes unless gate 0 flags a difference._\n")
+        md.append("```")
+        for k, v in pre["fleet"].items():
+            md.append(f"{k:<18} {v}")
         md.append("```\n")
 
     md.append("## Gate verdicts\n")
@@ -542,6 +610,10 @@ def main():
             md.append(f"### `{t['file']}`" + (f" — scale {t['scale']}" if t["scale"] else ""))
             if not any(r["baseline"] for r in t["rows"]):
                 md.append("\n_No baseline for this GPU/scale._")
+            elif t.get("baseline_variants", 0) > 1:
+                md.append(f"\n_{t['baseline_variants']} reference rows exist for this scale "
+                          "in `baselines.md` (measured on different clusters). The "
+                          "comparison uses the highest of them._")
             if t["out_of_bounds"]:
                 md.append(f"\n**`# Out of bounds values = {t['out_of_bounds']}`** — "
                           "the collective returned incorrect results. This is a "
@@ -586,11 +658,13 @@ def main():
 
         if pft["pair"]:
             md.append("### Per-rail, single QP\n")
-            md.append("| Rail | GB/s | write Gb/s | bidir | read Gb/s | write lat (us) | send lat (us) |")
-            md.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+            md.append("| Direction | Rail | GB/s | write Gb/s | bidir | read Gb/s "
+                      "| write lat (us) | send lat (us) |")
+            md.append("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
             for r in pft["pair"]:
-                md.append(f"| {r['rail']} | {r['gbs']} | {r['wr_bw']} | {r['wr_bidi']} "
-                          f"| {r['rd_bw']} | {r['wr_lat_us']} | {r['send_lat_us']} |")
+                md.append(f"| {r.get('direction', '?')} | {r['rail']} | {r['gbs']} "
+                          f"| {r['wr_bw']} | {r['wr_bidi']} | {r['rd_bw']} "
+                          f"| {r['wr_lat_us']} | {r['send_lat_us']} |")
             md.append("")
         if pft["agg"]:
             md.append("### Per-rail aggregate (multi-QP)\n")

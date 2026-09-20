@@ -1,5 +1,7 @@
 # AI infrastructure performance — vendor preparation & acceptance package
 
+**English** | [中文](README.zh.md)
+
 This repository is the **vendor-facing** package for a GPU cluster POC. It contains
 everything needed to prepare a cluster and produce the acceptance measurements,
 runnable **by the vendor on the vendor's own cluster**: the scripts take your host
@@ -30,36 +32,36 @@ git clone <this repo> && cd ai_infra_perf_prepare
 cp preflight/hosts.txt.example preflight/hosts.txt && vim preflight/hosts.txt
 NODE_PASSWORD='...' bash tools/setup_ssh_keyless.sh preflight/hosts.txt --port 22
 
-# 1. node consistency
-cd preflight
-bash cluster_runtime_check.sh -H hosts.txt -P 22 -o ../results/preflight/runtime.csv
-bash cluster_spec_check.sh    -H hosts.txt -P 22 -o ../results/preflight/spec.csv
+# 1. node consistency  (runs here, piped to the nodes over ssh)
+mkdir -p results/preflight
+bash preflight/cluster_runtime_check.sh -H preflight/hosts.txt -P 22 -o results/preflight/runtime.csv
+bash preflight/cluster_spec_check.sh    -H preflight/hosts.txt -P 22 -o results/preflight/spec.csv
+
+#    ... first copy this repo to <NODE_DIR> on every node — see VENDOR_RUNBOOK.md Step 3
 
 # 2. single-GPU compute, every card, all nodes
-cd ../cublas_bench
-bash cluster_cublas_percard.sh -H ../preflight/hosts.txt -P 22 --gpu H800
+bash cublas_bench/cluster_cublas_percard.sh \
+     -H preflight/hosts.txt -P 22 -u root \
+     -i <IMAGE> -g H800 -s <NODE_DIR>/cublas_bench
 
-# 3. NCCL interconnect
-cd ../nccl_bench
-bash nccltest_autoconf.sh -H hosts.txt --apply     # derive the cluster-specific params
-cp hosts.txt.example hosts.txt && vim hosts.txt
-bash split_ip.sh
-#    ... start the container on every node, then run from one node — see nccl_bench/readme.md
+# 3. NCCL interconnect  (autoconf inspects a node, so run it ON one)
+ssh <node> "cd <NODE_DIR>/nccl_bench && bash nccltest_autoconf.sh --apply"
+#    ... then start the container on every node and run from one — see nccl_bench/readme.md
 
 # 4. RDMA point-to-point
-cd ../perftest
-bash rail_isolation_check.sh node01 node02          # do this first, it constrains the rest
-bash perftest_pair.sh node01 node02
-bash perftest_agg.sh  node01 node02
+bash perftest/rail_isolation_check.sh node01 node02   # first: it constrains the rest
+bash perftest/perftest_pair.sh node01 node02
+bash perftest/perftest_agg.sh  node01 node02
 
 # 5. package everything for submission
-cd .. && bash tools/collect_results.sh --vendor <name> --gpu H800 --dir results
+bash tools/collect_results.sh --vendor <name> --gpu H800 --dir results
 python3 tools/summarize.py results --vendor <name> --gpu H800
 ```
 
-Full step-by-step detail, including what each gate should produce and how to read
-it, is in **[VENDOR_RUNBOOK.md](VENDOR_RUNBOOK.md)**. The acceptance tables to fill
-in are in **[SUBMISSION.md](SUBMISSION.md)**.
+This is the short version — **[VENDOR_RUNBOOK.md](VENDOR_RUNBOOK.md)** is the
+step-by-step to actually follow, including what each gate should produce, how to
+read it, and the traps. The acceptance tables to fill in are in
+**[SUBMISSION.md](SUBMISSION.md)**.
 
 ## Prerequisites
 

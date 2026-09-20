@@ -1,5 +1,7 @@
 # Submission
 
+**English** | [中文](SUBMISSION.zh.md)
+
 What to hand back, and the tables to complete alongside it.
 
 The machine-generated part is produced by `tools/collect_results.sh` and

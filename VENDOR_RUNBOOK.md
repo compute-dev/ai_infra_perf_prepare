@@ -1,5 +1,7 @@
 # Vendor runbook — step by step
 
+**English** | [中文](VENDOR_RUNBOOK.zh.md)
+
 Follow this top to bottom. Every gate writes into `results/<gate>/` and the
 packaging script at the end collects all four. If a step produces no output,
 that gate has **not** been accepted.
@@ -431,6 +433,7 @@ Not exercised on that cluster, and worth a first-run check on yours:
 - `tools/setup_ssh_keyless.sh` — passwordless ssh already existed there.
 - `nccl_bench/close_acs.sh` — it changes PCIe configuration and needs a reboot,
   so it was deliberately not run.
-- Gate 2 beyond two nodes, and gate 1 on a large fleet.
-- Gate 1's fleet sweep was smoke-tested with one card per node rather than all
-  eight; the mechanism is the same.
+- Gate 1 was run at **full 8-card scale** on a single node and came back clean
+  (fleet spread 0.06–1.7 %, no outlier cards). The re-verification of these
+  exact commands used one card per node to keep it quick — same mechanism.
+- Gate 2 ran at 1 node (8 GPUs) and 2 nodes (16 GPUs); not beyond that.

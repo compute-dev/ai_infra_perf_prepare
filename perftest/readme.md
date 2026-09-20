@@ -1,5 +1,7 @@
 # perftest — RDMA point-to-point baseline
 
+**English** | [中文](readme.zh.md)
+
 Measures the raw RDMA fabric between two nodes, independently of NCCL. This is
 how you separate a **fabric** problem from an **NCCL / configuration** problem:
 if point-to-point is at line rate, the fabric is fine and the fault is above it.

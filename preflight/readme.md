@@ -1,5 +1,7 @@
 # Node-consistency preflight
 
+**English** | [中文](readme.zh.md)
+
 This directory holds a small set of Bash scripts that verify every node in a
 GPU cluster is **configuration-consistent** *before* any performance test
 (cuBLAS / NCCL / bitwise) runs. Run them first; they are cheap and they catch

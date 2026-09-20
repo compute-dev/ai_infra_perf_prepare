@@ -1,5 +1,7 @@
 # cuBLAS GEMM Benchmark
 
+**English** | [中文](readme.zh.md)
+
 Single-GPU GEMM TFLOPS benchmark for NVIDIA GPUs (B200, B300, GB200, GB300,
 H100, H200, H800, A800, H20, L20). Measures per-card compute throughput across
 all supported precisions (FP4 / FP8 / INT8 / FP16 / BF16 / TF32 / FP32) and

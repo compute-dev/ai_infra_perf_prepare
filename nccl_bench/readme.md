@@ -1,5 +1,7 @@
 # nccl_bench — NCCL collective / interconnect bandwidth test
 
+**English** | [中文](readme.zh.md)
+
 Measures intra-node NVLink and inter-node RDMA bandwidth with
 [NVIDIA nccl-tests](https://github.com/NVIDIA/nccl-tests), covering the four
 collectives that matter for training: **AllReduce, All2All, AllGather,

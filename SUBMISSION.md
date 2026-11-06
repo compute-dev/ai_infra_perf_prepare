@@ -46,6 +46,7 @@ records what was missing either way.
 | GPUs per node | |
 | GPU model | |
 | NCCL scales tested (nodes) | |
+| Inference gate run? (inference cards only) | |
 | SSH port / user used | |
 
 > Excluded nodes must be named here. An unstated exclusion is indistinguishable
@@ -186,7 +187,77 @@ Any counter reported as `NA` means that rail is **unverified**, not clean — sa
 
 ---
 
-## 6. Sign-off
+## 6. Inference acceptance (inference cards only)
+
+Applies only to inference cards, and only after gates 0–3 have been accepted: a weak card
+or a bad link contaminates these numbers. One submission covers **one hardware model and
+one engine configuration**.
+
+> **Status: draft, and outside the packaging scripts.** `tools/collect_results.sh` and
+> `tools/summarize.py` do not yet know about this gate — package `results/inference/`
+> yourself, by hand, alongside the tarball they produce. The protocol itself is a draft
+> ([`inference_bench/pd_single/PROTOCOL.md`](inference_bench/pd_single/PROTOCOL.md)), and
+> its open items are listed in that document's §12.
+
+What is measured, per [`inference_bench/pd_single/`](inference_bench/pd_single/): single-node
+**Prefill-only** and **Decode-only** capacity under a fixed SLO (mean TTFT ≤ 7 s for P, mean
+TPOT ≤ 20 ms for D), 256k input at a 92% prefix-cache hit rate, model Hy3-FP8. End-to-end PD,
+KV transfer and multi-node are **not** in scope.
+
+| # | Item | Required value / evidence |
+| --- | --- | --- |
+| 1 | `submission_grade` | `true` in both `result.json` files. `false` means a self-check failed — fix it and re-run rather than submitting |
+| 2 | Manifest | `vendor_manifest.yaml` with every field filled; `validate-manifest` exits 0 |
+| 3 | Dataset fingerprints | `e9beb87e24e1`; with `--repeat>1` also `9adcdac59475`. Generated locally by `gen-datasets`, verified by the kit (C2) |
+| 4 | Tokenizer fingerprint | `7f062efabe6a` — the three files from Hugging Face `tencent/Hy3-FP8` (C2t) |
+| 5 | Client | The pinned image, `vllm==0.24.0`; request-body hashes equal the golden set (C13). Do not substitute your own client |
+| 6 | Repeats | ≥2 independent runs per concurrency tier; report the spread. A spread above 3% blocks the submission (C9) |
+| 7 | Single-P capacity | Highest QPM among PASS tiers, reported as both measured and steady-state, with the concurrency tier |
+| 8 | Single-D capacity | QPM of the highest tier such that every tier below it also PASSes, reported as both measured and steady-state, with the concurrency tier |
+| 9 | Knee evidence | The last PASS tier and the first FAIL tier, both with numbers. When `capacity.knee_found` is false (no tier broke the SLO), report it as "capacity ≥ `capacity.max_tier_measured`, knee not found" — **not** as the capacity |
+| 10 | Accuracy | `accuracy.status` is `unverified` in this version. State plainly that the capacity numbers passed no quality gate |
+| 11 | Server logs | The start-up log of each endpoint, containing `GPU KV cache size` (C11) |
+| 12 | Preemption | Per-tier `preemptions` must be 0 (C15). A tier that was preempted has unusable latency numbers |
+
+**Tier ceilings.** With the shipped dataset the D concurrency ceiling is c=20 and the P ceiling
+is c=8 — a property of the dataset size, not of your hardware. The kit rejects over-ceiling
+tiers before starting. If your capacity exceeds them, say so in the sign-off: the knee cannot
+be measured without a protocol-level change.
+
+### Result layout
+
+```
+results/
+  inference/
+    pd_single/
+      p_only/
+        result.json          primary result for the P role
+        summary.csv          one row per concurrency tier
+        c<N>_r<k>.json/.log  raw data per tier per repeat
+      d_only/
+        result.json          primary result for the D role
+        summary.csv
+        c<N>_r<k>.json/.log
+      vendor_manifest.yaml   the manifest used for this run
+      serve_p.log            P endpoint start-up log
+      serve_d.log            D endpoint start-up log
+```
+
+Keep the two roles in separate directories: one `run` writes one role. A role with no output
+has not been tested — say so in the sign-off rather than omitting it silently.
+
+### Capacity table
+
+| | Concurrency tier | Measured QPM | Steady-state QPM | Knee found | Notes |
+| --- | --- | ---: | ---: | --- | --- |
+| Single-P capacity | | | | | |
+| Single-D capacity | | | | | |
+
+**Inference gate result:** pass / fail — `___`
+
+---
+
+## 7. Sign-off
 
 | | |
 | --- | --- |

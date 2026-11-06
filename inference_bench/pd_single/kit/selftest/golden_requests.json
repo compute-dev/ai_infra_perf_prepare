@@ -1,0 +1,29 @@
+{
+ "payload_hashes": [
+  "3df33b2ca1a89d9639f0a23679b5d9a9fabb740b2b584e44a04ecf9506f4073e",
+  "81ef7cdf34ef0887f05d478a67ed1b760ccc3a002f662f43b79dbca874c31db4",
+  "c62c63cbe663fc78a21b0c434a68399c81a5852f547ecffcc079c67276d2636f"
+ ],
+ "example_payload": {
+  "model": "pdbench-selftest",
+  "messages": [
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "<71 chars>"
+     }
+    ]
+   }
+  ],
+  "max_completion_tokens": 5,
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  },
+  "ignore_eos": true,
+  "temperature": 0.9
+ },
+ "recorded_with_client": "0.23.1rc1.dev796+g95a248fae"
+}

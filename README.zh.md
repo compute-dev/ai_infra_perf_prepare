@@ -20,6 +20,15 @@
 第 0 关必须先做:节点不同构,后面的数字就不可比。第 1、2 关是主要的验收结论。
 第 3 关是定位工具,告诉你第 2 关的问题**出在哪里**。
 
+### 推理验收 —— 可选,仅推理卡
+
+推理卡在上面四关之后还有一关,目前是**草案**:
+[`inference_bench/`](inference_bench/README.zh.md) 测固定 SLO 下的单机 Prefill-only
+与 Decode-only 容量。它的范围是刻意收窄的 —— 不测端到端 PD、不测 KV 传输、不测多机 ——
+并且**不在** `tools/collect_results.sh` 与 `tools/summarize.py` 的覆盖范围内,结果需手工打包。
+只在第 0~3 关验收通过后再跑;弱卡或坏链路会污染它的结果。
+提交内容见 [SUBMISSION.zh.md](SUBMISSION.zh.md) 第 6 节。
+
 ## 快速开始
 
 ```bash
@@ -108,6 +117,7 @@ preflight/        第 0 关 —— 节点一致性采集器与比对器
 cublas_bench/     第 1 关 —— 逐卡 GEMM 基准、二进制、基线
 nccl_bench/       第 2 关 —— NCCL 集合通信测试(容器 + MPI)
 perftest/         第 3 关 —— RDMA 点对点与 rail 诊断
+inference_bench/  可选,仅推理卡 —— 单机 Prefill/Decode 容量(草案)
 tools/            ssh 打通、结果打包、汇总生成
 results/          由各关卡创建;这就是你要提交的内容
 VENDOR_RUNBOOK.md 完整的分步操作流程
@@ -121,3 +131,5 @@ SUBMISSION.md     验收表与提交格式
 清单和需要填写的表格见 [SUBMISSION.md](SUBMISSION.md)。
 
 **没有产出的关卡等于没有验收。** 打包脚本会点名缺失的关卡,而不会静默略过。
+
+可选的推理关不在这两个脚本内:`results/inference/` 需自行打包,与 tar 包一并提交。

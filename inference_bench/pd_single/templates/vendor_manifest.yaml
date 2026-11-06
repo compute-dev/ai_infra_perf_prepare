@@ -1,0 +1,57 @@
+# pdbench vendor manifest template (protocol pdbench-1.0). Every <…> value must be replaced;
+# validate-manifest rejects any required field left unfilled.
+protocol_version: pdbench-1.0
+vendor: <your company>
+run_id: <unique id for this run>
+
+hardware:
+  gpu_model: <model>
+  gpu_count: <GPUs per node>
+  gpu_mem_gib: <memory per GPU, GiB>
+  cpu_model: <model>
+  cpu_cores: <logical core count>
+  ram_gib: <host RAM, GiB>
+  driver: <driver version>
+  cuda: <CUDA / CANN / ROCm runtime version>
+
+image:
+  ref: <image reference, or the sha256 of a `docker save` archive>
+
+engine:
+  vllm_version: <version>
+  fork: <upstream, or the repository and commit of your fork/plugin>
+  deviations: []        # differences from upstream vLLM: replaced kernels / custom attention / scheduler changes / unmerged patches; write [] if there are none
+
+# Model: Hugging Face tencent/Hy3-FP8 (Apache-2.0). The kit verifies that tokenizer.json,
+# tokenizer_config.json and chat_template.jinja in your model directory match the official release (C2t).
+# Do not edit those three files and do not substitute a tokenizer from another source.
+precision:
+  weights: <fp8 | bf16 | int8 | ...>
+  kv_cache: <fp8_e4m3 | auto | ...>
+  rationale: ""         # required when weights is not fp8: why the official Hy3-FP8 cannot run
+
+endpoints:
+  p: http://<host>:<port>
+  d: http://<host>:<port>
+  hit_rate_source: metrics     # metrics (the prefix_cache_* counters on /metrics) | usage (usage.cached_tokens, not implemented in the kit yet)
+
+serve:
+  p_cmd: |
+    <full start command, including every environment variable>
+  d_cmd: |
+    <full start command>
+  tp: <N>
+  max_model_len: <N>
+  gpu_mem_util: <0.x>
+  prefix_caching: true          # required for D
+  chunked_prefill: <true | false | default>
+  mtp_tokens: <0 | N>
+  cudagraph: <description>
+  other_optimizations: []
+
+attest:                         # items the kit cannot verify by itself; declared by the vendor and spot-checked on re-measurement
+  cold_compile_cache_cleared: true   # the compilation cache was cleared before each server start
+  exclusive_machine: true            # the machine was exclusive during the test, with no other GPU load
+
+client:
+  cpuset: <CPU cores reserved for the client, e.g. 0-7; write none if not isolated>

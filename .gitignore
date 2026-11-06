@@ -43,3 +43,9 @@ results_*.tar.gz
 # Python bytecode
 __pycache__/
 *.pyc
+
+# inference_bench outputs and local datasets
+inference_bench/**/datasets/
+inference_bench/**/out/
+inference_bench/**/vendor_manifest.yaml
+!inference_bench/pd_single/templates/vendor_manifest.yaml

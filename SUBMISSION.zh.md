@@ -45,6 +45,7 @@ results/
 | 每节点 GPU 数 | |
 | GPU 型号 | |
 | 测过的 NCCL 规模(节点数) | |
+| 是否跑了推理关(仅推理卡) | |
 | 使用的 SSH 端口 / 用户 | |
 
 > 被排除的节点必须在此具名列出。未声明的排除,和从未测过的节点无法区分。
@@ -181,7 +182,75 @@ results/
 
 ---
 
-## 6. 签署
+## 6. 推理验收(仅推理卡)
+
+只适用于推理卡,且必须在 Gate 0~3 验收通过之后做:弱卡或坏链路会污染这里的数字。
+一份提交覆盖**一种硬件型号 + 一套引擎配置**。
+
+> **状态:草案,且不在打包脚本覆盖范围内。** `tools/collect_results.sh` 与
+> `tools/summarize.py` 还不认识这一关 —— `results/inference/` 需要你自己手工打包,
+> 与它们产出的 tarball 一并提交。协议本身是草案
+> ([`inference_bench/pd_single/PROTOCOL.zh.md`](inference_bench/pd_single/PROTOCOL.zh.md)),
+> 待定项见该文档 §12。
+
+测什么(依据 [`inference_bench/pd_single/`](inference_bench/pd_single/)):固定 SLO
+(P 的 mean TTFT ≤ 7 s、D 的 mean TPOT ≤ 20 ms)下的单机 **Prefill-only** 与
+**Decode-only** 容量,256k 输入、92% prefix cache 命中、模型 Hy3-FP8。
+端到端 PD、KV 传输、多机**都不在范围内**。
+
+| # | 项 | 要求值 / 证据 |
+| --- | --- | --- |
+| 1 | `submission_grade` | 两份 `result.json` 都为 `true`。`false` 表示有自检未通过,应修正后重跑,不要直接提交 |
+| 2 | 清单 | `vendor_manifest.yaml` 每项都已填写;`validate-manifest` 退出码 0 |
+| 3 | 数据集指纹 | `e9beb87e24e1`;`--repeat>1` 时另需 `9adcdac59475`。本地用 `gen-datasets` 生成,由 kit 校验(C2) |
+| 4 | tokenizer 指纹 | `7f062efabe6a` —— Hugging Face `tencent/Hy3-FP8` 的三个文件(C2t) |
+| 5 | 客户端 | 固定镜像,`vllm==0.24.0`;请求体哈希与 golden 一致(C13)。不得替换为自有客户端 |
+| 6 | 重复 | 每个并发档 ≥2 次独立运行,并报离散度。离散度超过 3% 阻断提交(C9) |
+| 7 | 单 P 容量 | 所有 PASS 档中的最大 QPM,实测与稳态都报,并给出对应并发档 |
+| 8 | 单 D 容量 | 从最小档起连续 PASS 的最大档 QPM,实测与稳态都报,并给出对应并发档 |
+| 9 | 拐点证据 | 最后一个 PASS 档与第一个 FAIL 档,都带数值。`capacity.knee_found` 为 false(无档破线)时,写成「容量 ≥ `capacity.max_tier_measured`,拐点未测出」,**不能**当作容量 |
+| 10 | 精度 | 本版 `accuracy.status` 为 `unverified`。需如实写明容量数字未经质量把关 |
+| 11 | 服务日志 | 两个端点各自的启动日志,含 `GPU KV cache size`(C11) |
+| 12 | 抢占 | 逐档 `preemptions` 必须为 0(C15)。发生抢占的档,其延迟数字不可用 |
+
+**档位上限**:随仓库发布的数据集下,D 的并发档上限为 c=20、P 为 c=8 —— 这由数据集规模决定,
+与你的硬件无关。kit 会在开跑前拒绝超限档位。若你的容量超过该上限,请在签收节写明:
+不做协议级变更就测不出拐点。
+
+### 结果目录布局
+
+```
+results/
+  inference/
+    pd_single/
+      p_only/
+        result.json          P 角色的主结果
+        summary.csv          每并发档一行
+        c<N>_r<k>.json/.log  逐档逐次原始数据
+      d_only/
+        result.json          D 角色的主结果
+        summary.csv
+        c<N>_r<k>.json/.log
+      vendor_manifest.yaml   本次运行所用清单
+      serve_p.log            P 端点启动日志
+      serve_d.log            D 端点启动日志
+```
+
+两个角色分目录存放:一次 `run` 只产出一个角色。没有输出的角色即未测,
+应在签收节写明,不要静默省略。
+
+### 容量表
+
+| | 并发档 | 实测 QPM | 稳态 QPM | 是否测到拐点 | 备注 |
+| --- | --- | ---: | ---: | --- | --- |
+| 单 P 容量 | | | | | |
+| 单 D 容量 | | | | | |
+
+**推理关结果:** pass / fail — `___`
+
+---
+
+## 7. 签署
 
 | | |
 | --- | --- |

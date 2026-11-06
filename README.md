@@ -23,6 +23,16 @@ Gate 0 must come first: without consistent nodes the later numbers are not
 comparable. Gates 1 and 2 are the headline acceptance results. Gate 3 is the
 diagnostic that tells you *where* a gate-2 problem lives.
 
+### Inference acceptance — optional, inference cards only
+
+For inference cards there is an additional, **draft** gate after the four above:
+[`inference_bench/`](inference_bench/README.md) measures single-node Prefill-only and
+Decode-only capacity under a fixed SLO. It is scoped deliberately narrowly — no
+end-to-end PD, no KV transfer, no multi-node — and it is **not** covered by
+`tools/collect_results.sh` or `tools/summarize.py`, so its results are packaged by hand.
+Run it only after gates 0–3 are accepted; a weak card or a bad link contaminates it.
+See [SUBMISSION.md](SUBMISSION.md) section 6 for what to submit.
+
 ## Quickstart
 
 ```bash
@@ -114,6 +124,7 @@ preflight/        gate 0 — node-consistency collectors and comparators
 cublas_bench/     gate 1 — per-GPU GEMM benchmark, binaries, baselines
 nccl_bench/       gate 2 — NCCL collective tests (container + MPI)
 perftest/         gate 3 — RDMA point-to-point and rail diagnostics
+inference_bench/  optional, inference cards — single-node Prefill/Decode capacity (draft)
 tools/            ssh setup, result packaging, summary generation
 results/          created by the gates; what you submit
 VENDOR_RUNBOOK.md full step-by-step procedure
@@ -129,3 +140,6 @@ into a written `SUMMARY.md` with the pass/fail verdicts. See
 
 **A gate with no output has not been accepted.** The packaging script names any
 missing gate rather than silently omitting it.
+
+The optional inference gate is outside those two scripts: package `results/inference/`
+yourself and submit it alongside the tarball.

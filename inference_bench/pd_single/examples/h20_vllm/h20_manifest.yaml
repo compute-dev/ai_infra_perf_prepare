@@ -1,0 +1,90 @@
+# Reference manifest (format example, NVIDIA H20 + vLLM).
+#
+# Sensitive fields of the reference platform are replaced with `<...>` placeholders.
+# Only `hardware.gpu_model` and `hardware.gpu_mem_gib` carry real values, so that you can see
+# which card the reference adaptation was written on; everything else must be filled in with
+# values from YOUR environment.
+#
+# This file therefore does NOT pass `validate-manifest` as shipped — that is intentional:
+# the checker rejects any required field left as a `<...>` placeholder. Fill them in first.
+#
+# Items marked "site-specific" are properties of the reference environment, not of the protocol;
+# replace them with whatever your hardware needs (or drop them).
+protocol_version: pdbench-1.0
+vendor: <your company>
+run_id: <your run id, e.g. acme-h20-20261106>
+
+hardware:
+  gpu_model: NVIDIA H20       # real value of the reference platform
+  gpu_mem_gib: 96             # real value of the reference platform
+  gpu_count: <number of GPUs used by one instance>
+  cpu_model: <CPU model>
+  cpu_cores: <logical CPU count>
+  ram_gib: <host RAM in GiB>
+  driver: <NVIDIA driver version>
+  cuda: <CUDA version (torch build)>
+
+image:
+  ref: <pullable image reference, or an image digest>
+
+engine:
+  vllm_version: <output of `vllm --version`>
+  fork: <upstream | your fork; if a fork, list the differences under deviations>
+  deviations: []
+
+precision:
+  weights: fp8
+  kv_cache: fp8_e4m3
+  rationale: ""               # required only when weights is not fp8
+
+endpoints:
+  p: http://127.0.0.1:8010
+  d: http://127.0.0.1:8020
+  hit_rate_source: metrics
+
+serve:
+  # Both commands below are the reference adaptation with site-specific parts replaced.
+  # `--served-model-name pdbench-model` must match what you pass to the kit.
+  p_cmd: |
+    export VLLM_FLASHINFER_ALLREDUCE_BACKEND=<allreduce backend>   # site-specific
+    export NCCL_SOCKET_IFNAME=<NIC name>                           # site-specific
+    export GLOO_SOCKET_IFNAME=<NIC name>                           # site-specific
+    rm -rf /root/.cache/vllm/torch_compile_cache
+    vllm serve <model dir> --host 0.0.0.0 --port 8010 \
+      --tensor-parallel-size 8 \
+      --gpu-memory-utilization 0.9 \
+      --tool-call-parser hy_v3 \
+      --enable-auto-tool-choice \
+      --served-model-name pdbench-model \
+      --reasoning-parser hy_v3 \
+      --kv-cache-dtype fp8_e4m3 \
+      --enable-prefix-caching
+  d_cmd: |
+    export VLLM_FLASHINFER_ALLREDUCE_BACKEND=<allreduce backend>   # site-specific
+    export NCCL_SOCKET_IFNAME=<NIC name>                           # site-specific
+    export GLOO_SOCKET_IFNAME=<NIC name>                           # site-specific
+    rm -rf /root/.cache/vllm/torch_compile_cache
+    vllm serve <model dir> --host 0.0.0.0 --port 8020 \
+      --tensor-parallel-size 8 \
+      --gpu-memory-utilization 0.9 \
+      --tool-call-parser hy_v3 \
+      --enable-auto-tool-choice \
+      --served-model-name pdbench-model \
+      --reasoning-parser hy_v3 \
+      --kv-cache-dtype fp8_e4m3 \
+      --enable-prefix-caching
+  tp: 8
+  max_model_len: 262144       # not passed explicitly; this is the model default
+  gpu_mem_util: 0.9
+  prefix_caching: true        # must be true
+  chunked_prefill: default
+  mtp_tokens: 0
+  cudagraph: default
+  other_optimizations: []
+
+attest:
+  cold_compile_cache_cleared: true   # the `rm -rf` on the first line of p_cmd/d_cmd does this
+  exclusive_machine: true            # no other GPU process on the machine during the run
+
+client:
+  cpuset: none                # client and server in the same container, no CPU isolation (open item O2)

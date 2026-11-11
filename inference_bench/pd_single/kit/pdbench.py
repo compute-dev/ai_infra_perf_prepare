@@ -334,11 +334,22 @@ def cmd_selftest(a):
 
 
 # ---------------------------------------------------------------- single-role tests
+def tpm(r, key, tokens):
+    """Tokens per minute. Taken from the client's own throughput field — the same source as the
+    `Output/Total token throughput (tok/s)` lines it prints — and derived from tokens/duration only if a
+    client build omits the field."""
+    v = r.get(key)
+    return (v if v is not None else tokens / r["duration"]) * 60
+
+
 def tier_row(role, c, r, hit, acc, rep, warmups_seen):
     n = r["completed"]
+    otpm = tpm(r, "output_throughput", r["total_output_tokens"])
+    ttpm = tpm(r, "total_token_throughput", r["total_input_tokens"] + r["total_output_tokens"])
     row = dict(concurrency=c, rep=rep, num_prompts=r["num_prompts"], completed=n, mean_input_tokens=round(r["total_input_tokens"] / n),
                mean_output_tokens=round(r["total_output_tokens"] / n), mean_ttft_ms=r["mean_ttft_ms"], p50_ttft_ms=r["median_ttft_ms"],
-               p99_ttft_ms=r["p99_ttft_ms"], qpm=r["request_throughput"] * 60, steady_qpm=c * 60000 / r["mean_e2el_ms"], prefix_hit=hit)
+               p99_ttft_ms=r["p99_ttft_ms"], qpm=r["request_throughput"] * 60, steady_qpm=c * 60000 / r["mean_e2el_ms"],
+               input_tpm=ttpm - otpm, output_tpm=otpm, total_tpm=ttpm, prefix_hit=hit)
     if role == "d": row.update(mean_tpot_ms=r["mean_tpot_ms"], p99_tpot_ms=r["p99_tpot_ms"], mtp_accept=acc)
     row["_out_lens"] = r.get("output_lens"); row["_errors"] = [e for e in (r.get("errors") or []) if e]
     row["_warmups"] = warmups_seen
@@ -346,8 +357,8 @@ def tier_row(role, c, r, hit, acc, rep, warmups_seen):
 
 
 KEY = dict(p="mean_ttft_ms", d="mean_tpot_ms")
-NUMS = ["mean_input_tokens", "mean_output_tokens", "mean_ttft_ms", "p50_ttft_ms", "p99_ttft_ms", "qpm", "steady_qpm", "prefix_hit",
-        "mean_tpot_ms", "p99_tpot_ms", "mtp_accept"]
+NUMS = ["mean_input_tokens", "mean_output_tokens", "mean_ttft_ms", "p50_ttft_ms", "p99_ttft_ms", "qpm", "steady_qpm",
+        "input_tpm", "output_tpm", "total_tpm", "prefix_hit", "mean_tpot_ms", "p99_tpot_ms", "mtp_accept"]
 
 
 def aggregate(role, reps):
@@ -438,21 +449,31 @@ def make_checks(role, raw, rows, a, m, fill, tiers, fp, ev=None):
     return ck
 
 
-def capacity(role, rows):
+def capacity(role, rows, tp=None):
+    """tp: the GPUs the instance actually uses, read from the manifest's serve.tp — a vendor declaration, and the
+    stated denominator of per_gpu_total_tpm. Without a manifest the per-GPU figure is left as None rather than
+    divided by a guessed count."""
+    if not isinstance(tp, int) or isinstance(tp, bool) or tp <= 0: tp = None
     ok = [r for r in rows if r["verdict"] == "PASS"]
     first_fail = next((r["concurrency"] for r in rows if r["verdict"] == "FAIL"), None)
-    f = lambda r: r and dict(concurrency=r["concurrency"], qpm=r["qpm"], steady_qpm=r["steady_qpm"])
-    b = max(ok, key=lambda r: r["qpm"]) if ok else None
+    f = lambda r: r and dict(concurrency=r["concurrency"], qpm=r["qpm"], steady_qpm=r["steady_qpm"], output_tpm=r["output_tpm"],
+                             total_tpm=r["total_tpm"], per_gpu_total_tpm=(r["total_tpm"] / tp if tp else None))
+    # max_tpm is the primary capacity reading; max_qpm is reported alongside. The two can land on different
+    # tiers, in which case the tiers' mean input/output lengths differ — compare the tier rows before reading
+    # anything into it.
+    bt = max(ok, key=lambda r: r["total_tpm"]) if ok else None
+    bq = max(ok, key=lambda r: r["qpm"]) if ok else None
     # knee_found=False: every measured tier PASSed, so the knee lies at a higher concurrency and was not
     # reached. The capacity then reads as ">= the highest tier measured" and must not be presented as this
     # hardware's capacity (otherwise running out of tiers is indistinguishable from a real knee in result.json).
-    knee = dict(knee_found=first_fail is not None, max_tier_measured=max((r["concurrency"] for r in rows), default=None))
-    if role == "p": return dict(max_qpm=f(b), first_fail_concurrency=first_fail, **knee)
+    knee = dict(knee_found=first_fail is not None, max_tier_measured=max((r["concurrency"] for r in rows), default=None),
+                per_gpu_basis=dict(source="serve.tp", value=tp) if tp else None)
+    if role == "p": return dict(max_tpm=f(bt), max_qpm=f(bq), first_fail_concurrency=first_fail, **knee)
     contig = None
     for r in rows:
         if r["verdict"] == "PASS": contig = r
         else: break
-    return dict(contiguous=f(contig), max_qpm=f(b), first_fail_concurrency=first_fail, **knee)
+    return dict(contiguous=f(contig), max_tpm=f(bt), max_qpm=f(bq), first_fail_concurrency=first_fail, **knee)
 
 
 def cmd_run(a):
@@ -529,7 +550,8 @@ def cmd_run(a):
             row = tier_row(role, c, r, hit, acc, rep, int(wm.group(1)) if wm else None)
             row["preemptions"] = delta(s0, s1, PRE[0])   # requests the server preempted and recomputed during this run; >0 means KV pressure already affected this tier (C15)
             reps.append(row); raw.append(row)
-            print(f"{role.upper()} c={c} #{rep}: {KEY[role][5:-3]} {row[KEY[role]]:.2f} QPM {row['qpm']:.1f} hit {hit}", flush=True)
+            print(f"{role.upper()} c={c} #{rep}: {KEY[role][5:-3]} {row[KEY[role]]:.2f} QPM {row['qpm']:.1f} "
+                  f"total TPM {row['total_tpm']:,.0f} output TPM {row['output_tpm']:,.0f} hit {hit}", flush=True)
         agg = aggregate(role, reps); rows.append(agg)
         if touch is not None: agg["touch_hit"] = touch["hit_ratio"]   # <1 means some prompts had been evicted before this tier started and were recomputed
         fails = fails + 1 if agg["verdict"] == "FAIL" else 0
@@ -547,7 +569,8 @@ def cmd_run(a):
                                                  "serve.chunked_prefill", "serve.cudagraph", "serve.other_optimizations")} if m else None),   # snapshot of the vendor's declarations, so an evaluation can list them side by side
                submission_grade=bool(m) and not bad and all(c["status"] in ("PASS", "WARN") for c in ck),
                env={**env_snapshot(), "tokenizer_fp": tfp}, dataset=dict(fingerprint=fp), slo=dict(ttft_ms=PROTO["ttft_slo_ms"], tpot_ms=PROTO["tpot_slo_ms"]),
-               repeat=a.repeat, d_output_len=(PROTO["d_output_len"] if role == "d" else None), fill=fill, tiers=rows, capacity=capacity(role, rows), checks=ck,
+               repeat=a.repeat, d_output_len=(PROTO["d_output_len"] if role == "d" else None), fill=fill, tiers=rows,
+               capacity=capacity(role, rows, dig(m, "serve.tp") if m else None), checks=ck,
                accuracy=dict(status="unverified", smoke=None), wall_seconds=round(time.time() - t0))
     json.dump(res, open(os.path.join(base, "result.json"), "w"), indent=1, ensure_ascii=False)
     flat = [{k: v for k, v in r.items() if k != "repeat"} for r in rows]

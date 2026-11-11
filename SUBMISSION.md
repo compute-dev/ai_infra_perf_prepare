@@ -212,8 +212,9 @@ KV transfer and multi-node are **not** in scope.
 | 4 | Tokenizer fingerprint | `7f062efabe6a` — the three files from Hugging Face `tencent/Hy3-FP8` (C2t) |
 | 5 | Client | The pinned image, `vllm==0.24.0`; request-body hashes equal the golden set (C13). Do not substitute your own client |
 | 6 | Repeats | ≥2 independent runs per concurrency tier; report the spread. A spread above 3% blocks the submission (C9) |
-| 7 | Single-P capacity | Highest QPM among PASS tiers, reported as both measured and steady-state, with the concurrency tier |
-| 8 | Single-D capacity | QPM of the highest tier such that every tier below it also PASSes, reported as both measured and steady-state, with the concurrency tier |
+| 7 | Single-P capacity | `capacity.max_tpm` — the PASS tier with the highest `total_tpm` (primary reading); report `total_tpm`, `per_gpu_total_tpm`, QPM (measured and steady-state) and the concurrency tier, and `capacity.max_qpm` alongside |
+| 8 | Single-D capacity | `capacity.contiguous` — the highest tier such that every tier below it also PASSes (D's primary metric); report `total_tpm`, `output_tpm`, `per_gpu_total_tpm`, QPM (measured and steady-state) and the concurrency tier, plus `capacity.max_tpm` and `capacity.max_qpm` |
+| 8b | Per-GPU TPM denominator | State whether the denominator is the TP degree or the whole machine's GPU count. The kit divides by the declared `serve.tp` and records it in `capacity.per_gpu_basis` |
 | 9 | Knee evidence | The last PASS tier and the first FAIL tier, both with numbers. When `capacity.knee_found` is false (no tier broke the SLO), report it as "capacity ≥ `capacity.max_tier_measured`, knee not found" — **not** as the capacity |
 | 10 | Accuracy | `accuracy.status` is `unverified` in this version. State plainly that the capacity numbers passed no quality gate |
 | 11 | Server logs | The start-up log of each endpoint, containing `GPU KV cache size` (C11) |
@@ -248,10 +249,13 @@ has not been tested — say so in the sign-off rather than omitting it silently.
 
 ### Capacity table
 
-| | Concurrency tier | Measured QPM | Steady-state QPM | Knee found | Notes |
-| --- | --- | ---: | ---: | --- | --- |
-| Single-P capacity | | | | | |
-| Single-D capacity | | | | | |
+| | Concurrency tier | Total TPM | Per-GPU TPM | Measured QPM | Steady-state QPM | Knee found | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| Single-P capacity (`max_tpm`) | | | | | | | |
+| Single-D capacity (`contiguous`) | | | | | | | |
+| Single-D, highest within SLO (`max_tpm`) | | | | | | | |
+
+Per-GPU TPM denominator (TP degree or whole-machine GPU count): `___`
 
 **Inference gate result:** pass / fail — `___`
 

@@ -125,20 +125,30 @@ client:
 | 温度 | **显式 `temperature=0.9`(P、D 都发)**;`seed=0` |
 | 请求速率 | `request_rate=inf`(闭环) |
 | 并发档 | kit 默认 P:1~8;D:1,2,4,6,8,10,12,16,20(上限 c=20,见 §6 并发档上限),配合 `--stop-after-fail 2` 连续两档破线即停。`first_fail_concurrency` 随所测档位而定,**容量判定不受影响** |
-| 请求数 | P:每档 80(≥10×c 要求 c≤8);D:每档 `min(200, max(40, 10×c))` |
+| 请求数 | P:每档 80(≥10×c 要求 c≤8);D:每档 `min(N, max(40, 10×c))`,`N` 为实际灌入的条数(见 §6 第 2 步) |
 | D 灌缓存 | 回放前先跑一遍 `N` 条(`max_completion_tokens=1`,c=4),`N = min(回放集条数, max(40, 10×最高档))`,之后每档回放 |
 | warmup | P 每档 10;D 每档 2(不计入统计) |
 | 重复 | 每个单元格 **≥2 次独立运行**(厂商自测为同一实例上两次;跨机器重复见 §14 未覆盖项),报告离散度 |
-| 容量定义 | **所测档位全部 PASS 时 `capacity.knee_found` 为 false,结果只能读作「容量 ≥ 所测最高档,拐点未测出」,不得当作该硬件的容量。** P:所有 PASS 档中的最大 QPM;D:①从最小档起连续 PASS 的最大档 QPM(主指标)②所有 PASS 档最大 QPM;两者都报「实测」与「稳态」(`c×60000/mean_e2el_ms`) |
+| 吞吐指标 | QPM = 请求/分钟(`request_throughput × 60`)。TPM = token/分钟,分三项:`input_tpm`(输入,含前缀缓存命中的 token)、`output_tpm`(输出)、`total_tpm`(两者之和);取客户端的 `output_throughput` 与 `total_token_throughput` 乘 60,与客户端自己打印的 `Output/Total token throughput (tok/s)` 同源。单卡 TPM = `total_tpm ÷ serve.tp` |
+| 容量定义 | **所测档位全部 PASS 时 `capacity.knee_found` 为 false,结果只能读作「容量 ≥ 所测最高档,拐点未测出」,不得当作该硬件的容量。** 主口径 `max_tpm` = 所有 PASS 档中 `total_tpm` 最大的一档;同时报 `max_qpm` = 所有 PASS 档中 QPM 最大的一档。D 另报 `contiguous` = 从最小档起连续 PASS 的最大档(D 的主指标;按档位顺序取,与选用哪个指标无关)。三个条目都给出 QPM、稳态 QPM(`c×60000/mean_e2el_ms`)、`output_tpm`、`total_tpm`、`per_gpu_total_tpm` |
 
 **温度说明**:P/D 都显式发 `temperature=0.9`,不依赖服务端 `generation_config` 的默认值(各引擎/镜像默认值不保证一致)。在参考平台上验证过显式发送对 P 单测指标无影响(§14)。
+
+**TPM 的读法**:
+
+- P 单测每请求输出 1 个 token,`output_tpm` 在数值上等于 QPM,不含 QPM 之外的信息;P 的吞吐看 `input_tpm` 与 `total_tpm`。
+- `input_tpm` 计入前缀缓存命中的 token(本场景设计命中率 0.92),因此不等于 prefill 的计算吞吐;其中未命中部分为 `input_tpm × (1 − prefix_hit)`。
+- D 单测输出固定 1,200,`output_tpm = QPM × 1,200` 是恒等关系。SLO 判定(mean TPOT ≤ 20 ms)与连续达标档的取法都不随指标选择改变。
+- `max_tpm` 与 `max_qpm` 可能落在不同档。P 的输入长度按设计恒定(C6 允许 ±2%),两者不同档时差异来自各档数据集输入长度的抖动,不代表性能差异;读数前先对照两档的 `mean_input_tokens` 与 `mean_output_tokens`。
+- 单卡 TPM 的分母取厂商清单声明的 `serve.tp`(实例实际使用的卡数),记录在 `capacity.per_gpu_basis`;无清单时 `per_gpu_total_tpm` 为 `null`,不按推测的卡数相除。报告中必须注明分母取 TP 度还是整机卡数。
+- 离散度自检(C9)仍只看延迟与 QPM:D 固定输出下 TPM 的离散度与 QPM 恒等,P 下为近重复项。
 
 ## 5. P 单测
 
 1. 起 P 端点,等就绪;记录 `GPU KV cache size` 与全部启动参数。
 2. 逐档:采样 `/metrics` 命中计数 → `vllm bench serve`(数据集第 c 档文件,`--custom-output-len 1`、`--num-prompts 80`、`--max-concurrency c`、`--num-warmups 10`、`--temperature 0.9`、`--seed 0`、`--ignore-eos`)→ 再采样命中计数。
-3. 记录:mean/p50/p99 TTFT、QPM、稳态 QPM、命中率(计数差)、输入 token 均值、完成数。
-4. 判定:mean TTFT ≤ 7 s;容量 = PASS 档最大 QPM。
+3. 记录:mean/p50/p99 TTFT、QPM、稳态 QPM、`input_tpm`/`output_tpm`/`total_tpm`、命中率(计数差)、输入 token 均值、完成数。
+4. 判定:mean TTFT ≤ 7 s;容量按 §4 容量定义取 `max_tpm` 与 `max_qpm`。
 
 ## 6. D 单测(两遍法)
 
@@ -148,7 +158,7 @@ client:
 2. 灌缓存:`N` 条,c=4,`max_completion_tokens=1`;记录本遍命中率。**`N` 按本次扫描的目标档位算** —— `N = min(回放集条数, max(40, 10×最高档))`,不把回放集顶满(见下「为什么 N 不顶满」)。
 3. **逐档重新访问**:每档回放前,先对该档要用的 prompt 以 `max_completion_tokens=1`、c=4 走一遍,记录本遍命中率(`tiers[].touch_hit`)。仍在缓存则开销接近零;已被逐出则重新算回并回到最近使用位置。**该遍在测量窗口之外,不计入该档指标。**
 4. 逐档回放:同一数据集、同 seed,`--custom-output-len 1200`(每条固定输出 1,200 token)、请求数按 §4 公式。
-5. 每档记录:mean/p99 TPOT、TTFT、QPM、稳态 QPM(固定输出长度下两者应基本重合;差得多说明收尾阶段或服务端排队有异常)、命中率、`touch_hit`、MTP 接受率(若开 MTP)、最大 running/waiting、最大 KV 使用率。
+5. 每档记录:mean/p99 TPOT、TTFT、QPM、稳态 QPM(固定输出长度下两者应基本重合;差得多说明收尾阶段或服务端排队有异常)、`input_tpm`/`output_tpm`/`total_tpm`、命中率、`touch_hit`、MTP 接受率(若开 MTP)、最大 running/waiting、最大 KV 使用率。
 6. 判定:mean TPOT ≤ 20 ms。
 
 **为什么要第 3 步**:只在开头灌一次缓存时,尚未被任何档使用的 prompt 自灌缓存后再未被访问,在 LRU 顺序里最旧;而每条请求的 1,200 个输出 token 同样占用 KV,累计量随档位增长。累计量接近 KV 容量后,这些 prompt 先被逐出,表现为**该档第 1 次运行命中率下降、耗时偏高,第 2 次恢复**,两次重复发散。参考平台实测:两种配置分别从 c=10、c=14 起出现,两台机器起始档一致,两次重复差约 5%~9%(该档 TPOT 与 QPM)。`touch_hit < 1` 即该档开跑前发生过逐出。**显存更小的硬件会在更低档位触发。**
@@ -266,11 +276,18 @@ python3 -I kit/pdbench.py run --role d ... --stop-after-fail 2     # 默认 --re
       "concurrency": 4, "num_prompts": 80, "completed": 80,
       "mean_input_tokens": 84800, "mean_output_tokens": 1,
       "mean_ttft_ms": 1111.1, "p50_ttft_ms": 1111.1, "p99_ttft_ms": 2222.2,
-      "qpm": 11.1, "steady_qpm": 11.1, "prefix_hit": 0.93,
+      "qpm": 11.1, "steady_qpm": 11.1,
+      "input_tpm": 888888.8, "output_tpm": 11.1, "total_tpm": 888899.9, "prefix_hit": 0.93,
       "verdict": "PASS", "repeat": [{"qpm": 11.1, "mean_ttft_ms": 1111.1, "p99_ttft_ms": 2222.2}, {"...": "..."}]
     }],
-    "capacity": { "max_qpm": { "concurrency": 4, "qpm": 11.1, "steady_qpm": 11.1 }, "first_fail_concurrency": 5,
-                  "knee_found": true, "max_tier_measured": 8 }
+    "capacity": {
+      "max_tpm": { "concurrency": 4, "qpm": 11.1, "steady_qpm": 11.1, "output_tpm": 11.1,
+                   "total_tpm": 888899.9, "per_gpu_total_tpm": 111112.5 },
+      "max_qpm": { "concurrency": 4, "qpm": 11.1, "steady_qpm": 11.1, "output_tpm": 11.1,
+                   "total_tpm": 888899.9, "per_gpu_total_tpm": 111112.5 },
+      "first_fail_concurrency": 5, "knee_found": true, "max_tier_measured": 8,
+      "per_gpu_basis": { "source": "serve.tp", "value": 8 }
+    }
   },
   "d_only": {
     "fill": { "num_prompts": 200, "completed": 200, "hit_ratio": 0.92 },
@@ -278,13 +295,20 @@ python3 -I kit/pdbench.py run --role d ... --stop-after-fail 2     # 默认 --re
       "concurrency": 8, "num_prompts": 80, "completed": 80,
       "mean_input_tokens": 84800, "mean_output_tokens": 1200,
       "mean_ttft_ms": 333.3, "mean_tpot_ms": 9.99, "p99_tpot_ms": 9.99,
-      "qpm": 22.2, "steady_qpm": 22.2, "prefix_hit": 1.0, "touch_hit": 1.0, "preemptions": 0,
+      "qpm": 22.2, "steady_qpm": 22.2,
+      "input_tpm": 888888.8, "output_tpm": 26640.0, "total_tpm": 915528.8,
+      "prefix_hit": 1.0, "touch_hit": 1.0, "preemptions": 0,
       "mtp_accept": null, "verdict": "PASS", "repeat": [{"...": "..."}]
     }],
     "capacity": {
-      "contiguous": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2 },
-      "max_qpm": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2 }, "first_fail_concurrency": 10,
-      "knee_found": true, "max_tier_measured": 12
+      "contiguous": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2, "output_tpm": 26640.0,
+                      "total_tpm": 915528.8, "per_gpu_total_tpm": 114441.1 },
+      "max_tpm": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2, "output_tpm": 26640.0,
+                   "total_tpm": 915528.8, "per_gpu_total_tpm": 114441.1 },
+      "max_qpm": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2, "output_tpm": 26640.0,
+                   "total_tpm": 915528.8, "per_gpu_total_tpm": 114441.1 },
+      "first_fail_concurrency": 10, "knee_found": true, "max_tier_measured": 12,
+      "per_gpu_basis": { "source": "serve.tp", "value": 8 }
     }
   },
   "accuracy": { "status": "unverified", "smoke": null },
@@ -333,6 +357,8 @@ python3 -I kit/pdbench.py run --role d ... --stop-after-fail 2     # 默认 --re
 
 - kit 的 P(8 档)、D(多档)全档位运行与评测方自有基线逐档一致;`submission_grade` 路径、前置检查、自检回归用例(`kit/tests/`)通过。
 - D 改为固定输出 1,200 后,在参考平台上做了对照(§13):TPOT 与 SLO 判定不变,实测 QPM 不再被收尾拖低。随后按固定输出口径在参考平台上补测了 **D 三种配置的全档位 + P 三种配置**,共 9 份结果全部 `submission_grade=true`,其中每种 D 配置都在两台机器上各跑一次。
+- 容量主口径由 QPM 改为 `total_tpm`(§4)。TPM 取客户端自带的 `output_throughput` 与 `total_token_throughput`,不新增采集路径。已用参考平台上留存的全部逐次原始结果核对:`output_tpm` 与 `QPM × 平均输出长度` 在浮点精度内恒等,`total_tpm` 与由聚合行推导的值相对差在 1e-5 以内(来自聚合行中输入 token 均值取整)。
+- 按 TPM 口径在参考平台上重测了同样的 9 份(D 三种配置全档位 + P 三种配置,共 81 个档位),全部 `submission_grade=true`,C15 抢占计数全为 0。**9 份里 `max_tpm` 与 `max_qpm` 全部落在同一档** —— 本场景的 token 长度按档位恒定(D 输出固定、P 输入由数据集设计恒定),所以口径变更改变的是容量结论的单位,不改变取档。与上一轮逐档对照:延迟与 QPM 的最大相对差都在 2% 以内(落在 C9 的 WARN 带内),容量档逐份一致;唯一的判定差异出现在一个 mean TPOT 与 20 ms SLO 相差不到 0.3% 的档上,该配置的 `contiguous` 不受影响。**贴着 SLO 线的档,其「SLO 内最大」读数在档位粒度上不保证可复现。**
 - 固定客户端 `vllm==0.24.0` 发出的请求体与更早的开发构建逐字节等价(stub 抓包哈希一致);两者指标对账一致。
 - 去掉 KV 传输 connector、P 显式 `temperature=0.9`,对 P/D 指标无影响。
 - `client/Dockerfile` 在两台机器上构建成功,镜像内 `selftest-client` 通过。

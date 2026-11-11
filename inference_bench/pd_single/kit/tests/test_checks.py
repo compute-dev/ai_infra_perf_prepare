@@ -43,10 +43,12 @@ print('C7 per-request check of the fixed D output length   OK')
 expect('D replay hit rate 1.0 passes','d',dgood,'C5','PASS')
 expect('D hit rate 0.9','d',[row('d',4,1,prefix_hit=0.9),row('d',4,2)],'C5','FAIL')
 expect('cache fill incomplete','d',dgood,'C7f','FAIL',fill=dict(num_prompts=200,completed=150))
-cp=m.capacity('p',[dict(concurrency=c,verdict=v,qpm=q,steady_qpm=q) for c,v,q in [(4,'PASS',10.0),(6,'PASS',12.0),(7,'FAIL',11.0)]])
-assert cp['max_qpm']['concurrency']==6 and cp['first_fail_concurrency']==7, cp
+def crows(spec):   # TPM proportional to QPM, as it is when the per-tier token lengths are equal
+    return [dict(concurrency=c,verdict=v,qpm=q,steady_qpm=q,output_tpm=q*1200,total_tpm=q*86000) for c,v,q in spec]
+cp=m.capacity('p',crows([(4,'PASS',10.0),(6,'PASS',12.0),(7,'FAIL',11.0)]))
+assert cp['max_qpm']['concurrency']==6 and cp['max_tpm']['concurrency']==6 and cp['first_fail_concurrency']==7, cp
 print('P capacity = highest-QPM tier within SLO c=6, first fail c=7   OK')
-cd=m.capacity('d',[dict(concurrency=c,verdict=v,qpm=q,steady_qpm=q) for c,v,q in [(4,'PASS',10.0),(8,'PASS',20.0),(10,'FAIL',19.0),(12,'PASS',30.0),(13,'FAIL',29.0)]])
+cd=m.capacity('d',crows([(4,'PASS',10.0),(8,'PASS',20.0),(10,'FAIL',19.0),(12,'PASS',30.0),(13,'FAIL',29.0)]))
 assert cd['contiguous']['concurrency']==8 and cd['max_qpm']['concurrency']==12 and cd['first_fail_concurrency']==10, cd
 print('D non-monotonic: contiguous c=8 / max c=12 / first fail c=10   OK')
 print('ALL TESTS PASSED')
@@ -137,4 +139,48 @@ assert runp([row('d', 4, 1, preemptions=3), row('d', 4, 2, preemptions=0)])['C15
 assert runp([row('d', 4, 1), row('d', 4, 2)])['C15'] == 'SKIP', 'no preemption counter collected must SKIP'
 print('C15 preemptions               0=PASS / >0=FAIL / not collected=SKIP')
 
-print('ALL TESTS PASSED (pre-flight checks, replay eviction, tier ceiling guard, derived fill size, preemptions)')
+# TPM: taken from the client's own throughput fields. The field values below are an actual `vllm bench serve`
+# result (D c=6, 60 requests x 1200 output tokens) so the arithmetic is checked against a real client payload.
+def raw(**kw):
+    r = dict(duration=232.4584967251867, completed=60, num_prompts=60, total_input_tokens=5090164, total_output_tokens=72000,
+             request_throughput=0.2581105911173994, output_throughput=309.7327093408793, total_token_throughput=22206.82002474932,
+             mean_ttft_ms=300.0, median_ttft_ms=300.0, p99_ttft_ms=300.0, mean_e2el_ms=23245.8, mean_tpot_ms=15.0, p99_tpot_ms=16.0,
+             output_lens=[1200] * 60, errors=[])
+    r.update(kw); return r
+t = m.tier_row('d', 6, raw(), 1.0, None, 1, 2)
+assert abs(t['output_tpm'] - 309.7327093408793 * 60) < 1e-9, t['output_tpm']
+assert abs(t['total_tpm'] - 22206.82002474932 * 60) < 1e-6, t['total_tpm']
+assert abs(t['input_tpm'] + t['output_tpm'] - t['total_tpm']) < 1e-6, 'input + output must equal total'
+assert abs(t['output_tpm'] / (t['qpm'] * P['d_output_len']) - 1) < 1e-9, 'D fixed output: output TPM = QPM x 1200'
+print(f"D TPM from a real client result        total {t['total_tpm']:,.0f} output {t['output_tpm']:,.0f} input {t['input_tpm']:,.0f}")
+# Fallback when a client build omits the throughput fields: the derived value must match the field value.
+tf = m.tier_row('d', 6, raw(output_throughput=None, total_token_throughput=None), 1.0, None, 1, 2)
+for k in ('input_tpm', 'output_tpm', 'total_tpm'):
+    assert abs(tf[k] / t[k] - 1) < 1e-9, (k, tf[k], t[k])
+print('TPM fallback via tokens/duration       matches the client fields')
+# P emits 1 output token per request, so its output TPM carries no information beyond QPM.
+tp_ = m.tier_row('p', 6, raw(total_output_tokens=60, output_throughput=0.2581105911173994, total_token_throughput=21897.0,
+                             output_lens=[1] * 60), 0.92, None, 1, 10)
+assert abs(tp_['output_tpm'] - tp_['qpm']) < 1e-9, 'P: output TPM equals QPM numerically'
+print('P output TPM equals QPM                ', round(tp_['output_tpm'], 3))
+
+# capacity(): max_tpm is the primary reading, max_qpm is reported alongside; they may land on different tiers.
+def cap_row(c, q, tt, verdict='PASS'):
+    return dict(concurrency=c, qpm=q, steady_qpm=q, output_tpm=tt / 2, total_tpm=tt, verdict=verdict)
+rows = [cap_row(4, 60.0, 1000.0), cap_row(6, 55.0, 1100.0), cap_row(8, 40.0, 900.0, 'FAIL')]
+cp = m.capacity('p', rows, 8)
+assert cp['max_qpm']['concurrency'] == 4 and cp['max_tpm']['concurrency'] == 6, cp
+assert cp['first_fail_concurrency'] == 8 and cp['knee_found'] is True and cp['max_tier_measured'] == 8, cp
+assert abs(cp['max_tpm']['per_gpu_total_tpm'] - 1100.0 / 8) < 1e-9, cp['max_tpm']
+assert cp['per_gpu_basis'] == dict(source='serve.tp', value=8), cp['per_gpu_basis']
+cd = m.capacity('d', rows, 8)
+assert cd['contiguous']['concurrency'] == 6, cd['contiguous']   # tier ordering, unaffected by which metric is maximised
+print('capacity max_qpm / max_tpm             c=%d / c=%d, contiguous c=%d' % (cp['max_qpm']['concurrency'], cp['max_tpm']['concurrency'], cd['contiguous']['concurrency']))
+# Without a manifest there is no declared GPU count, so the per-GPU figure stays None instead of being guessed.
+cn = m.capacity('p', rows, None)
+assert cn['per_gpu_basis'] is None and cn['max_tpm']['per_gpu_total_tpm'] is None, cn
+for bad in (0, -8, True, '8', 8.0):
+    assert m.capacity('p', rows, bad)['per_gpu_basis'] is None, bad
+print('per-GPU TPM without a declared count   None (not guessed)')
+
+print('ALL TESTS PASSED (pre-flight checks, replay eviction, tier ceiling guard, derived fill size, preemptions, TPM)')

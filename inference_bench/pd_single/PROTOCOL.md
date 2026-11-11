@@ -129,16 +129,26 @@ client:
 | D cache fill | Before replaying, run one pass over `N` prompts (`max_completion_tokens=1`, c=4), where `N = min(replay-set size, max(40, 10×highest tier))`; then replay tier by tier |
 | warmup | 10 per tier for P; 2 per tier for D (excluded from the statistics) |
 | Repeats | **≥2 independent runs per cell** (vendor self-measurement runs twice on the same instance; cross-machine repetition is listed as uncovered in §14), and report the spread |
-| Capacity definition | **If every measured tier PASSes, `capacity.knee_found` is false and the result reads as "capacity >= the highest tier measured, knee not found"; it must not be presented as the hardware's capacity.** P: the highest QPM among all PASS tiers. D: ① the QPM of the highest tier such that every tier from the smallest up to it PASSes (primary metric) ② the highest QPM among all PASS tiers. Both are reported as "measured" and "steady-state" (`c×60000/mean_e2el_ms`) |
+| Throughput metrics | QPM = requests per minute (`request_throughput × 60`). TPM = tokens per minute, in three parts: `input_tpm` (input, including the tokens served from the prefix cache), `output_tpm` (output) and `total_tpm` (their sum); taken from the client's `output_throughput` and `total_token_throughput` times 60 — the same source as the `Output/Total token throughput (tok/s)` lines the client prints. Per-GPU TPM = `total_tpm ÷ serve.tp` |
+| Capacity definition | **If every measured tier PASSes, `capacity.knee_found` is false and the result reads as "capacity >= the highest tier measured, knee not found"; it must not be presented as the hardware's capacity.** The primary reading is `max_tpm` = the PASS tier with the highest `total_tpm`; `max_qpm` = the PASS tier with the highest QPM is reported alongside. D additionally reports `contiguous` = the highest tier such that every tier from the smallest up to it PASSes (D's primary metric; selected by tier order, independent of which metric is maximised). All three entries carry QPM, steady-state QPM (`c×60000/mean_e2el_ms`), `output_tpm`, `total_tpm` and `per_gpu_total_tpm` |
 
 **On temperature**: both P and D send `temperature=0.9` explicitly rather than relying on the server's `generation_config` default, because defaults are not guaranteed to agree across engines and images. Sending it explicitly was verified on the reference platform to leave the P metrics unchanged (§14).
+
+**How to read TPM**:
+
+- The P test emits 1 output token per request, so its `output_tpm` equals QPM numerically and carries nothing beyond QPM; read P throughput from `input_tpm` and `total_tpm`.
+- `input_tpm` counts the tokens served from the prefix cache (this scenario's designed hit rate is 0.92), so it is not prefill compute throughput; the uncached part is `input_tpm × (1 − prefix_hit)`.
+- With the D output fixed at 1,200, `output_tpm = QPM × 1,200` is an identity. Neither the SLO verdict (mean TPOT ≤ 20 ms) nor the selection of the contiguous-PASS tier changes with the choice of metric.
+- `max_tpm` and `max_qpm` can land on different tiers. P input length is constant by design (C6 allows ±2%), so when the two differ the difference comes from input-length jitter across the per-tier datasets and does not represent a performance difference; compare the two tiers' `mean_input_tokens` and `mean_output_tokens` before reading anything into it.
+- The denominator of per-GPU TPM is the manifest's declared `serve.tp` (the GPUs the instance actually uses), recorded in `capacity.per_gpu_basis`. Without a manifest `per_gpu_total_tpm` is `null` rather than divided by a guessed count. Reports must state whether the denominator is the TP degree or the whole machine's GPU count.
+- The spread check (C9) still looks only at latency and QPM: with the D output fixed, TPM spread is identical to QPM spread, and for P it is a near-duplicate.
 
 ## 5. P test
 
 1. Bring up the P endpoint and wait until it is ready; record `GPU KV cache size` and every start-up argument.
 2. For each tier: sample the `/metrics` hit counters → run `vllm bench serve` (the dataset file for tier c, with `--custom-output-len 1`, `--num-prompts 80`, `--max-concurrency c`, `--num-warmups 10`, `--temperature 0.9`, `--seed 0`, `--ignore-eos`) → sample the hit counters again.
-3. Record: mean/p50/p99 TTFT, QPM, steady-state QPM, hit rate (counter delta), mean input tokens, completed count.
-4. Verdict: mean TTFT ≤ 7 s; capacity = the highest QPM among PASS tiers.
+3. Record: mean/p50/p99 TTFT, QPM, steady-state QPM, `input_tpm`/`output_tpm`/`total_tpm`, hit rate (counter delta), mean input tokens, completed count.
+4. Verdict: mean TTFT ≤ 7 s; capacity is `max_tpm` and `max_qpm` per the capacity definition in §4.
 
 ## 6. D test (two-pass method)
 
@@ -148,7 +158,7 @@ client:
 2. Fill the cache: `N` prompts, c=4, `max_completion_tokens=1`; record this pass's hit rate. **`N` is derived from the tiers you intend to measure** — `N = min(replay-set size, max(40, 10×highest tier))`. Do not fill the replay set to the brim (see "Why N is not maximized" below).
 3. **Per-tier re-touch**: before replaying a tier, send one pass over exactly the prompts that tier will use, with `max_completion_tokens=1` and c=4, and record that pass's hit rate as `tiers[].touch_hit`. Prompts still in the cache cost almost nothing; prompts that were evicted are recomputed and become most-recently-used again. **This pass is outside the measurement window and does not enter the tier's metrics.**
 4. Replay tier by tier: same dataset, same seed, `--custom-output-len 1200` (1,200 output tokens per request), request count per the formula in §4.
-5. Record per tier: mean/p99 TPOT, TTFT, QPM, steady-state QPM (with a fixed output length the two should nearly coincide; a large gap means something is wrong in the tail of the run or in server-side queueing), hit rate, `touch_hit`, MTP acceptance rate (if MTP is on), peak running/waiting, peak KV utilization.
+5. Record per tier: mean/p99 TPOT, TTFT, QPM, steady-state QPM (with a fixed output length the two should nearly coincide; a large gap means something is wrong in the tail of the run or in server-side queueing), `input_tpm`/`output_tpm`/`total_tpm`, hit rate, `touch_hit`, MTP acceptance rate (if MTP is on), peak running/waiting, peak KV utilization.
 6. Verdict: mean TPOT ≤ 20 ms.
 
 **Why step 3 is needed**: if the cache is filled only once at the start, the prompts that no tier has used yet are never touched again after the fill pass, which makes them the oldest entries in LRU order; meanwhile the 1,200 output tokens of every request also occupy KV, and that accumulates as the tiers progress. Once the total approaches the KV capacity, those prompts are evicted first. The symptom is that **the tier's first run shows a lower hit rate and a longer time, and the second run recovers**, so the two repeats diverge. Measured on the reference platform: two configurations started showing this from c=10 and c=14 respectively, the starting tier was identical on two machines, and the two repeats differed by roughly 5%–9% (that tier's TPOT and QPM). `touch_hit < 1` means eviction had happened before that tier started. **Hardware with less memory triggers this at a lower tier.**
@@ -262,11 +272,18 @@ When a self-check fails the process exits with code 1 and `result.json` carries 
       "concurrency": 4, "num_prompts": 80, "completed": 80,
       "mean_input_tokens": 84800, "mean_output_tokens": 1,
       "mean_ttft_ms": 1111.1, "p50_ttft_ms": 1111.1, "p99_ttft_ms": 2222.2,
-      "qpm": 11.1, "steady_qpm": 11.1, "prefix_hit": 0.93,
+      "qpm": 11.1, "steady_qpm": 11.1,
+      "input_tpm": 888888.8, "output_tpm": 11.1, "total_tpm": 888899.9, "prefix_hit": 0.93,
       "verdict": "PASS", "repeat": [{"qpm": 11.1, "mean_ttft_ms": 1111.1, "p99_ttft_ms": 2222.2}, {"...": "..."}]
     }],
-    "capacity": { "max_qpm": { "concurrency": 4, "qpm": 11.1, "steady_qpm": 11.1 }, "first_fail_concurrency": 5,
-                  "knee_found": true, "max_tier_measured": 8 }
+    "capacity": {
+      "max_tpm": { "concurrency": 4, "qpm": 11.1, "steady_qpm": 11.1, "output_tpm": 11.1,
+                   "total_tpm": 888899.9, "per_gpu_total_tpm": 111112.5 },
+      "max_qpm": { "concurrency": 4, "qpm": 11.1, "steady_qpm": 11.1, "output_tpm": 11.1,
+                   "total_tpm": 888899.9, "per_gpu_total_tpm": 111112.5 },
+      "first_fail_concurrency": 5, "knee_found": true, "max_tier_measured": 8,
+      "per_gpu_basis": { "source": "serve.tp", "value": 8 }
+    }
   },
   "d_only": {
     "fill": { "num_prompts": 200, "completed": 200, "hit_ratio": 0.92 },
@@ -274,13 +291,20 @@ When a self-check fails the process exits with code 1 and `result.json` carries 
       "concurrency": 8, "num_prompts": 80, "completed": 80,
       "mean_input_tokens": 84800, "mean_output_tokens": 1200,
       "mean_ttft_ms": 333.3, "mean_tpot_ms": 9.99, "p99_tpot_ms": 9.99,
-      "qpm": 22.2, "steady_qpm": 22.2, "prefix_hit": 1.0, "touch_hit": 1.0, "preemptions": 0,
+      "qpm": 22.2, "steady_qpm": 22.2,
+      "input_tpm": 888888.8, "output_tpm": 26640.0, "total_tpm": 915528.8,
+      "prefix_hit": 1.0, "touch_hit": 1.0, "preemptions": 0,
       "mtp_accept": null, "verdict": "PASS", "repeat": [{"...": "..."}]
     }],
     "capacity": {
-      "contiguous": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2 },
-      "max_qpm": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2 }, "first_fail_concurrency": 10,
-      "knee_found": true, "max_tier_measured": 12
+      "contiguous": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2, "output_tpm": 26640.0,
+                      "total_tpm": 915528.8, "per_gpu_total_tpm": 114441.1 },
+      "max_tpm": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2, "output_tpm": 26640.0,
+                   "total_tpm": 915528.8, "per_gpu_total_tpm": 114441.1 },
+      "max_qpm": { "concurrency": 8, "qpm": 22.2, "steady_qpm": 22.2, "output_tpm": 26640.0,
+                   "total_tpm": 915528.8, "per_gpu_total_tpm": 114441.1 },
+      "first_fail_concurrency": 10, "knee_found": true, "max_tier_measured": 12,
+      "per_gpu_basis": { "source": "serve.tp", "value": 8 }
     }
   },
   "accuracy": { "status": "unverified", "smoke": null },
@@ -329,6 +353,8 @@ Note that `content` is a **segment list**, not a string. The client takes the in
 
 - The kit's full-sweep P (8 tiers) and D (multiple tiers) runs agree tier by tier with the evaluator's own baseline; the `submission_grade` path, the pre-flight checks and the self-check regression cases (`kit/tests/`) pass.
 - After switching D to a fixed output of 1,200, a comparison was run on the reference platform (§13): TPOT and the SLO verdicts unchanged, and the measured QPM no longer dragged down by the tail of the run. Reference values were then re-measured under the fixed-output rule for **all tiers of three D configurations plus three P configurations** — 9 results, all `submission_grade=true`, with each D configuration run once on each of two machines.
+- The primary capacity reading changed from QPM to `total_tpm` (§4). TPM is taken from the client's own `output_throughput` and `total_token_throughput`, which adds no collection path. Checked against every retained per-run raw result on the reference platform: `output_tpm` is identical to `QPM × mean output length` within float precision, and `total_tpm` differs from the value derived from the aggregate rows by under 1e-5 relative (caused by the rounding of mean input tokens in those rows).
+- The same 9 results (all tiers of three D configurations plus three P configurations — 81 tiers) were re-measured on the reference platform under the TPM reading: all `submission_grade=true`, with the C15 preemption counter 0 throughout. **In all 9, `max_tpm` and `max_qpm` land on the same tier** — this scenario's token lengths are constant per tier (fixed D output, dataset-fixed P input), so the change of reading alters the unit of the capacity result rather than which tier is selected. Compared tier by tier against the previous round: latency and QPM both differ by under 2% at most (inside C9's WARN band), with the capacity tier identical in every result; the only verdict difference falls on a tier whose mean TPOT sits under 0.3% away from the 20 ms SLO, and that configuration's `contiguous` reading is unaffected. **For a tier that sits on the SLO line, the "highest within SLO" reading is not guaranteed to reproduce at tier granularity.**
 - The request body emitted by the pinned client `vllm==0.24.0` is byte-equivalent to that of the earlier development build (identical stub-captured hashes), and the two reconcile on every metric.
 - Removing the KV-transfer connector, and sending `temperature=0.9` explicitly for P, leave the P/D metrics unchanged.
 - `client/Dockerfile` built successfully on two machines, and `selftest-client` passes inside the image.

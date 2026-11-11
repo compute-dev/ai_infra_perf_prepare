@@ -206,8 +206,9 @@ results/
 | 4 | tokenizer 指纹 | `7f062efabe6a` —— Hugging Face `tencent/Hy3-FP8` 的三个文件(C2t) |
 | 5 | 客户端 | 固定镜像,`vllm==0.24.0`;请求体哈希与 golden 一致(C13)。不得替换为自有客户端 |
 | 6 | 重复 | 每个并发档 ≥2 次独立运行,并报离散度。离散度超过 3% 阻断提交(C9) |
-| 7 | 单 P 容量 | 所有 PASS 档中的最大 QPM,实测与稳态都报,并给出对应并发档 |
-| 8 | 单 D 容量 | 从最小档起连续 PASS 的最大档 QPM,实测与稳态都报,并给出对应并发档 |
+| 7 | 单 P 容量 | `capacity.max_tpm` —— 所有 PASS 档中 `total_tpm` 最大的一档(主口径);报 `total_tpm`、`per_gpu_total_tpm`、QPM(实测与稳态)与对应并发档,并同时给出 `capacity.max_qpm` |
+| 8 | 单 D 容量 | `capacity.contiguous` —— 从最小档起连续 PASS 的最大档(D 主指标);报 `total_tpm`、`output_tpm`、`per_gpu_total_tpm`、QPM(实测与稳态)与对应并发档,并同时给出 `capacity.max_tpm` 与 `capacity.max_qpm` |
+| 8b | 单卡 TPM 分母 | 注明分母取 TP 度还是整机卡数。kit 按清单声明的 `serve.tp` 相除,并记录在 `capacity.per_gpu_basis` |
 | 9 | 拐点证据 | 最后一个 PASS 档与第一个 FAIL 档,都带数值。`capacity.knee_found` 为 false(无档破线)时,写成「容量 ≥ `capacity.max_tier_measured`,拐点未测出」,**不能**当作容量 |
 | 10 | 精度 | 本版 `accuracy.status` 为 `unverified`。需如实写明容量数字未经质量把关 |
 | 11 | 服务日志 | 两个端点各自的启动日志,含 `GPU KV cache size`(C11) |
@@ -241,10 +242,13 @@ results/
 
 ### 容量表
 
-| | 并发档 | 实测 QPM | 稳态 QPM | 是否测到拐点 | 备注 |
-| --- | --- | ---: | ---: | --- | --- |
-| 单 P 容量 | | | | | |
-| 单 D 容量 | | | | | |
+| | 并发档 | 总 TPM | 单卡 TPM | 实测 QPM | 稳态 QPM | 是否测到拐点 | 备注 |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| 单 P 容量(`max_tpm`) | | | | | | | |
+| 单 D 容量(`contiguous`) | | | | | | | |
+| 单 D SLO 内最大(`max_tpm`) | | | | | | | |
+
+单卡 TPM 的分母(TP 度或整机卡数): `___`
 
 **推理关结果:** pass / fail — `___`
 
